@@ -457,13 +457,15 @@ class MultiRegionOverlay(QDialog):
             self.enabled.extend([True] * (len(self.regions) - len(self.enabled)))
         self.active_index = -1
         self.hover_index = -1
+        self.hover_action = ""
         self.hover_edges: set[str] = set()
         self.action = ""
+        self.resize_edges: set[str] = set()
         self.start_point: QPoint | None = None
         self.origin_rect: QRect | None = None
         self.preview_rect: QRect | None = None
-        # 缩放只响应明确的边缘/角点控制柄，避免重叠区域同时响应。
-        self.handle_size = 12
+        # 四角方块用于斜向缩放，四边中点圆形控制点用于整体移动。
+        self.handle_size = 8
         self.minimum_region_size = 20
 
     def showEvent(self, event) -> None:
@@ -492,7 +494,7 @@ class MultiRegionOverlay(QDialog):
         painter.drawText(
             20,
             34,
-            "左键空白处新增；拖动区域移动；拖动边缘调整大小；Space 启用/停用；Delete 删除；Enter 完成；Esc 取消",
+            "空白处拖动新增；拖动边中圆点移动；拖动四角方块缩放；Space 启用/停用；Delete 删除；Enter 完成；Esc 取消",
         )
 
         colors = [
@@ -508,6 +510,9 @@ class MultiRegionOverlay(QDialog):
             if index == self.active_index:
                 color = QColor(255, 255, 255)
             painter.setPen(QPen(color, 2))
+            # 上一个区域的圆点使用了黄色填充；画新区域边框前必须关闭填充，
+            # 否则第二个及后续区域会被黄色画刷整块填满。
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(region)
             painter.fillRect(
                 QRect(region.left(), region.top(), 54, 22),
@@ -519,71 +524,82 @@ class MultiRegionOverlay(QDialog):
                 label += "（停用）"
             painter.drawText(region.left() + 7, region.top() + 16, label)
 
-            if index == self.active_index or index == self.hover_index:
-                painter.setBrush(QColor(255, 255, 255, 220))
-                painter.setPen(QPen(color, 1))
-                for handle in self.handle_rects(region).values():
-                    painter.drawRect(handle)
+            painter.setPen(QPen(color, 1))
+            painter.setBrush(QColor(255, 255, 255, 235))
+            for handle in self.corner_handle_rects(region).values():
+                painter.drawRect(handle)
+            painter.setBrush(QColor(255, 205, 70, 240))
+            for handle in self.move_handle_rects(region):
+                painter.drawEllipse(handle)
 
         if self.preview_rect is not None:
             painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.DashLine))
+            # 预览框只画虚线边框，不能继承前一个移动圆点的黄色填充。
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.preview_rect)
 
-    def region_at(self, position: QPoint) -> int:
-        for index in range(len(self.regions) - 1, -1, -1):
-            if self.regions[index].contains(position):
-                return index
-        return -1
-
-    def handle_rects(self, region: QRect) -> dict[str, QRect]:
+    def corner_handle_rects(self, region: QRect) -> dict[str, QRect]:
+        """返回位于区域四角、用于斜向缩放的方形控制点。"""
         half = self.handle_size // 2
         size = self.handle_size
-        centers = {
-            "left|top": QPoint(region.left(), region.top()),
-            "top": QPoint(region.center().x(), region.top()),
-            "right|top": QPoint(region.right(), region.top()),
-            "left": QPoint(region.left(), region.center().y()),
-            "right": QPoint(region.right(), region.center().y()),
-            "left|bottom": QPoint(region.left(), region.bottom()),
-            "bottom": QPoint(region.center().x(), region.bottom()),
-            "right|bottom": QPoint(region.right(), region.bottom()),
-        }
         return {
-            edges: QRect(point.x() - half, point.y() - half, size, size)
-            for edges, point in centers.items()
+            "left|top": QRect(region.left() - half, region.top() - half, size, size),
+            "right|top": QRect(region.right() - half, region.top() - half, size, size),
+            "left|bottom": QRect(region.left() - half, region.bottom() - half, size, size),
+            "right|bottom": QRect(region.right() - half, region.bottom() - half, size, size),
         }
 
-    def edges_at(self, region: QRect, position: QPoint) -> set[str]:
-        for edge_text, handle in self.handle_rects(region).items():
-            if handle.contains(position):
-                return set(edge_text.split("|"))
-        return set()
+    def move_handle_rects(self, region: QRect) -> list[QRect]:
+        """返回位于四边中点、用于整体移动的圆形控制点。"""
+        size = self.handle_size
+        half = size // 2
+        centers = [
+            QPoint(region.center().x(), region.top()),
+            QPoint(region.right(), region.center().y()),
+            QPoint(region.center().x(), region.bottom()),
+            QPoint(region.left(), region.center().y()),
+        ]
+        return [
+            QRect(point.x() - half, point.y() - half, size, size)
+            for point in centers
+        ]
 
-    def hit_test(self, position: QPoint) -> tuple[int, set[str]]:
-        # 先按区域本体从上到下命中；重叠时只允许最上层区域响应。
-        # 只有没有落在任何区域内部时，才允许命中外扩的控制柄区域。
+    def control_at(self, region: QRect, position: QPoint) -> tuple[str, set[str]]:
+        # 小区域的控制点可能重叠，此时角点缩放优先。
+        for edge_text, handle in self.corner_handle_rects(region).items():
+            if handle.contains(position):
+                return "resize", set(edge_text.split("|"))
+        for handle in self.move_handle_rects(region):
+            if handle.contains(position):
+                return "move", set()
+        return "", set()
+
+    def hit_test(self, position: QPoint) -> tuple[int, str, set[str]]:
+        # 重叠区域只允许最上层的一个区域响应。
         for index in range(len(self.regions) - 1, -1, -1):
-            if self.regions[index].contains(position):
-                return index, self.edges_at(self.regions[index], position)
+            region = self.regions[index]
+            if region.contains(position):
+                action, edges = self.control_at(region, position)
+                return index, action or "select", edges
+
+        # 控制点以边框为中心，因此一半可能位于区域外部。
         for index in range(len(self.regions) - 1, -1, -1):
-            edges = self.edges_at(self.regions[index], position)
-            if edges:
-                return index, edges
-        return -1, set()
+            action, edges = self.control_at(self.regions[index], position)
+            if action:
+                return index, action, edges
+        return -1, "", set()
 
     def update_hover(self, position: QPoint) -> None:
-        self.hover_index, self.hover_edges = self.hit_test(position)
-        if self.hover_edges:
-            if self.hover_edges in ({"left", "right"},):
-                cursor = Qt.CursorShape.SizeHorCursor
-            elif self.hover_edges in ({"top", "bottom"},):
-                cursor = Qt.CursorShape.SizeVerCursor
-            elif self.hover_edges in ({"left", "top"}, {"right", "bottom"}):
+        self.hover_index, self.hover_action, self.hover_edges = self.hit_test(position)
+        if self.hover_action == "resize":
+            if self.hover_edges in ({"left", "top"}, {"right", "bottom"}):
                 cursor = Qt.CursorShape.SizeFDiagCursor
             else:
                 cursor = Qt.CursorShape.SizeBDiagCursor
-        elif self.hover_index >= 0:
+        elif self.hover_action == "move":
             cursor = Qt.CursorShape.SizeAllCursor
+        elif self.hover_action == "select":
+            cursor = Qt.CursorShape.ArrowCursor
         else:
             cursor = Qt.CursorShape.CrossCursor
         self.setCursor(cursor)
@@ -593,7 +609,7 @@ class MultiRegionOverlay(QDialog):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         position = event.position().toPoint()
-        index, edges = self.hit_test(position)
+        index, action, edges = self.hit_test(position)
         if index < 0:
             self.active_index = -1
             self.action = "new"
@@ -601,10 +617,17 @@ class MultiRegionOverlay(QDialog):
             self.preview_rect = QRect(position, position)
         else:
             self.active_index = index
-            self.start_point = position
-            self.origin_rect = QRect(self.regions[index])
-            self.action = "resize" if edges else "move"
-            self.resize_edges = edges
+            if action in ("move", "resize"):
+                self.action = action
+                self.start_point = position
+                self.origin_rect = QRect(self.regions[index])
+                self.resize_edges = edges
+            else:
+                # 区域内部只负责选中，不再触发移动。
+                self.action = ""
+                self.start_point = None
+                self.origin_rect = None
+                self.resize_edges.clear()
         self.update()
 
     def mouseMoveEvent(self, event) -> None:
@@ -637,6 +660,7 @@ class MultiRegionOverlay(QDialog):
                 self.enabled.append(True)
                 self.active_index = len(self.regions) - 1
         self.action = ""
+        self.resize_edges.clear()
         self.start_point = None
         self.origin_rect = None
         self.preview_rect = None
@@ -684,7 +708,6 @@ class MultiRegionOverlay(QDialog):
             self.update()
             return
         super().keyPressEvent(event)
-
 
 class TranslationWorker(QThread):
     completed = Signal(str, str)
@@ -765,8 +788,8 @@ class MonitorSetupDialog(QDialog):
         self.setMinimumWidth(460)
 
         self.scope_combo = QComboBox()
-        self.scope_combo.addItem("监控主显示器全屏", "full")
         self.scope_combo.addItem("监控指定区域", "region")
+        self.scope_combo.addItem("监控主显示器全屏", "full")
         self.interval_spin = QDoubleSpinBox()
         self.interval_spin.setRange(0.5, 60.0)
         self.interval_spin.setSingleStep(0.5)
@@ -910,6 +933,8 @@ class MonitorResultWindow(QDialog):
         self.scroll_pause_timer.setSingleShot(True)
         self.scroll_pause_timer.timeout.connect(self.start_auto_scroll)
         self.scroll_direction = 1
+        self.display_revision = 0
+        self.pending_scroll_state: tuple[int, bool, int] | None = None
 
         # 子控件（标题栏、滚动区域、文字标签）会分别接收鼠标事件。
         # 在每个子控件上安装过滤器会导致坐标系和事件处理顺序不一致，
@@ -932,7 +957,19 @@ class MonitorResultWindow(QDialog):
         self.set_display_entries(entries)
 
     def set_display_entries(self, entries: list[tuple[int | None, str]]) -> None:
-        self.clear_result()
+        # 内容刷新期间滚动条范围会短暂归零。连续收到多个区域的结果时，
+        # 沿用第一次刷新前保存的位置，避免后面的区域永远被顶端内容挡住。
+        if self.pending_scroll_state is None:
+            scrollbar = self.translation_scroll.verticalScrollBar()
+            old_maximum = scrollbar.maximum()
+            self.pending_scroll_state = (
+                scrollbar.value(),
+                old_maximum > 0 and scrollbar.value() >= old_maximum - 2,
+                self.scroll_direction,
+            )
+        self.display_revision += 1
+        revision = self.display_revision
+        self.clear_result(restart_scroll=False)
         for region_id, text in entries:
             card = QFrame(self.translation_content)
             card.setObjectName("translationCard")
@@ -963,18 +1000,36 @@ class MonitorResultWindow(QDialog):
 
         self.show()
         self.raise_()
-        QTimer.singleShot(0, self.fit_translation_font)
+        QTimer.singleShot(0, lambda rev=revision: self.fit_translation_font(rev))
 
-    def clear_result(self) -> None:
+    def clear_result(self, restart_scroll: bool = True) -> None:
         for card, _body in self.translation_cards:
             self.translation_cards_layout.removeWidget(card)
             card.setParent(None)
             card.deleteLater()
         self.translation_cards.clear()
-        self.restart_auto_scroll()
+        self.scroll_timer.stop()
+        self.scroll_pause_timer.stop()
+        if restart_scroll:
+            self.display_revision += 1
+            self.pending_scroll_state = None
+            self.restart_auto_scroll()
 
-    def fit_translation_font(self) -> None:
+    def fit_translation_font(self, revision: int | None = None) -> None:
+        if revision is None:
+            scrollbar = self.translation_scroll.verticalScrollBar()
+            maximum = scrollbar.maximum()
+            self.pending_scroll_state = (
+                scrollbar.value(),
+                maximum > 0 and scrollbar.value() >= maximum - 2,
+                self.scroll_direction,
+            )
+            self.display_revision += 1
+            revision = self.display_revision
+        elif revision != self.display_revision:
+            return
         if not self.translation_cards:
+            self.restore_scroll_after_update(revision)
             return
         selected_font = QFont(self.font())
         selected_font.setPointSize(self.translation_font_size)
@@ -983,7 +1038,22 @@ class MonitorResultWindow(QDialog):
             body.updateGeometry()
         self.translation_content.adjustSize()
         self.translation_scroll.updateGeometry()
-        QTimer.singleShot(0, self.restart_auto_scroll)
+        QTimer.singleShot(0, lambda rev=revision: self.restore_scroll_after_update(rev))
+
+    def restore_scroll_after_update(self, revision: int) -> None:
+        if revision != self.display_revision:
+            return
+        state = self.pending_scroll_state
+        self.pending_scroll_state = None
+        if state is None:
+            state = (0, False, 1)
+        old_value, followed_bottom, old_direction = state
+        scrollbar = self.translation_scroll.verticalScrollBar()
+        maximum = scrollbar.maximum()
+        scrollbar.setValue(maximum if followed_bottom else min(old_value, maximum))
+        self.scroll_direction = old_direction
+        if maximum > 0 and self.isVisible():
+            self.scroll_pause_timer.start(1200)
 
     def restart_auto_scroll(self) -> None:
         self.scroll_timer.stop()
@@ -1018,6 +1088,14 @@ class MonitorResultWindow(QDialog):
             self.scroll_pause_timer.start(1200)
         else:
             scrollbar.setValue(next_value)
+
+    def resume_auto_scroll_after_window_change(self) -> None:
+        """窗口锁定状态切换后，从当前位置恢复自动滚动。"""
+        self.scroll_timer.stop()
+        self.scroll_pause_timer.stop()
+        scrollbar = self.translation_scroll.verticalScrollBar()
+        if scrollbar.maximum() > 0 and self.isVisible():
+            self.scroll_pause_timer.start(300)
 
     def set_window_opacity(self, percentage: int) -> None:
         # 兼容旧代码：此参数现在只控制背景，不再降低翻译文字的清晰度。
@@ -1069,8 +1147,9 @@ class MonitorResultWindow(QDialog):
         """让锁定后的分层窗口把鼠标交给下方任意程序。"""
         transparent_input_flag = Qt.WindowType.WindowTransparentForInput
         has_transparent_input = bool(int(self.windowFlags()) & int(transparent_input_flag))
-        if has_transparent_input != enabled:
-            was_visible = self.isVisible()
+        window_flags_changed = has_transparent_input != enabled
+        was_visible = self.isVisible()
+        if window_flags_changed:
             saved_geometry = QRect(self.geometry())
             # 先同步 Qt 的鼠标透明属性，再切换窗口标志，避免解锁时
             # 旧的 WA_TransparentForMouseEvents 把透明输入标志重新带回去。
@@ -1088,6 +1167,8 @@ class MonitorResultWindow(QDialog):
                 Qt.WidgetAttribute.WA_TransparentForMouseEvents,
                 enabled,
             )
+        if window_flags_changed and was_visible:
+            QTimer.singleShot(0, self.resume_auto_scroll_after_window_change)
         if sys.platform != "win32":
             return
         try:
