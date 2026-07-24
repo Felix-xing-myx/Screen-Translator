@@ -1,20 +1,16 @@
 $ErrorActionPreference = 'Stop'
 
-$customPython = 'E:\Python 3.14.6\python.exe'
-$pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
-if (Test-Path -LiteralPath $customPython) {
-    $pythonExe = $customPython
-} elseif ($pythonCommand) {
-    $pythonExe = $pythonCommand.Source
-} else {
-    Write-Host 'Python was not found. Check the configured path or install Python and add it to PATH.' -ForegroundColor Yellow
-    exit 1
+if (-not (Test-Path -LiteralPath $venvPython)) {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
+        throw 'Python was not found. A Python installation is required only for development.'
+    }
+    & $pythonCommand.Source -m venv (Join-Path $projectRoot '.venv')
 }
 
-if (-not (Test-Path -LiteralPath '.venv')) {
-    & $pythonExe -m venv .venv
-}
-
-& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-& .\.venv\Scripts\python.exe main.py
+& $venvPython -m pip install -r (Join-Path $projectRoot 'requirements.txt')
+$env:PYTHONPATH = Join-Path $projectRoot 'src'
+& $venvPython -m screen_translator

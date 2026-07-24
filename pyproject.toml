@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "screen-translator"
+version = "0.1.0"
+description = "Windows screen OCR and translation utility"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "PySide6>=6.7,<7",
+    "Pillow>=10.0,<12",
+    "pytesseract>=0.3.13,<0.4",
+    "requests>=2.31,<3",
+    "mss>=9.0,<11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "PyInstaller>=6.10,<7",
+    "pytest>=8,<9",
+]
+
+[project.scripts]
+screen-translator = "screen_translator.application:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
