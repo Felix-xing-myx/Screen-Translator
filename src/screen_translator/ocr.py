@@ -17,8 +17,16 @@ def application_root() -> Path:
 
 
 def bundled_tesseract_path() -> Path | None:
-    candidate = application_root() / "tesseract" / "tesseract.exe"
-    return candidate if candidate.is_file() else None
+    """Find Tesseract in both source and packaged layouts."""
+    root = application_root()
+    candidates = (
+        root / "tesseract" / "tesseract.exe",
+        root / "vendor" / "tesseract" / "tesseract.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def configure_tesseract(configured_path: str = "") -> Path | None:
@@ -52,6 +60,10 @@ def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
                 "请在设置中选择 E:\\Tesseract OCR\\tesseract.exe。"
             )
         pytesseract.pytesseract.tesseract_cmd = str(candidate)
+    else:
+        bundled_path = bundled_tesseract_path()
+        if bundled_path:
+            pytesseract.pytesseract.tesseract_cmd = str(bundled_path)
 
     # 游戏字幕和网页小字通常只有十几像素高。先放大、转灰度并增强
     # 对比度，可以显著降低“截图有字但 OCR 返回空”的情况。

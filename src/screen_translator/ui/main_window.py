@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from mss import MSS
 from PIL import Image
 from PySide6.QtCore import QRect, QTimer, Qt
@@ -22,12 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..capture import CaptureOverlay, MultiRegionOverlay
+from ..audio_translation import AudioTranslationWorker
 from ..config import AppSettings, load_settings, save_settings
 from ..hotkeys import GlobalHotkeyFilter
 from ..models import MonitorRegion
 from ..workers import TranslationWorker
 from .monitor import MonitorSetupDialog
 from .results import MonitorResultWindow
+from .audio_results import AudioTranslationWindow
 from .settings import SettingsDialog
 from .styles import MAIN_STYLE_SHEET
 
@@ -37,6 +41,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = load_settings()
         self.worker: TranslationWorker | None = None
+        self.audio_worker: AudioTranslationWorker | None = None
+        self._audio_stop_requested = False
         self.monitor_workers: dict[tuple[int, int], TranslationWorker] = {}
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self.monitor_tick)
@@ -49,6 +55,9 @@ class MainWindow(QMainWindow):
         self.monitor_edit_previous_lock = False
         self.capture_active = False
         self.hotkey_filter: GlobalHotkeyFilter | None = None
+        self.audio_result_window = AudioTranslationWindow()
+        self.audio_result_window.stop_requested.connect(self.stop_audio_translation)
+        self.audio_result_window.lock_changed.connect(self.sync_audio_lock_button)
         self.setWindowTitle("Screen Translator")
         self.resize(760, 560)
 
@@ -60,6 +69,9 @@ class MainWindow(QMainWindow):
         self.monitor_button = QPushButton("开始持续监控")
         self.monitor_button.setMinimumHeight(42)
         self.monitor_button.clicked.connect(self.start_monitor)
+        self.audio_button = QPushButton("开始音频翻译")
+        self.audio_button.setMinimumHeight(42)
+        self.audio_button.clicked.connect(self.start_audio_translation)
         self.overlay_lock_button = QPushButton("锁定翻译窗口")
         self.overlay_lock_button.setEnabled(False)
         self.overlay_lock_button.clicked.connect(self.toggle_overlay_lock)
@@ -127,6 +139,51 @@ class MainWindow(QMainWindow):
         font_size_row.addWidget(self.font_size_slider, 1)
         font_size_row.addWidget(self.font_size_value_label)
 
+        self.audio_lock_button = QPushButton("锁定音频窗口")
+        self.audio_lock_button.setEnabled(False)
+        self.audio_lock_button.clicked.connect(self.toggle_audio_lock)
+
+        self.audio_background_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.audio_background_opacity_slider.setRange(0, 100)
+        self.audio_background_opacity_slider.setValue(max(0, min(100, self.settings.audio_background_opacity)))
+        self.audio_background_opacity_slider.valueChanged.connect(self.set_audio_background_opacity)
+        self.audio_background_opacity_value_label = QLabel(f"{self.audio_background_opacity_slider.value()}%")
+        self.audio_background_opacity_value_label.setObjectName("opacityLabel")
+        audio_background_row = QHBoxLayout()
+        audio_background_row.addWidget(QLabel("主背景及历史记录"))
+        audio_background_row.addWidget(self.audio_background_opacity_slider, 1)
+        audio_background_row.addWidget(self.audio_background_opacity_value_label)
+
+        self.audio_text_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.audio_text_opacity_slider.setRange(30, 100)
+        self.audio_text_opacity_slider.setValue(max(30, min(100, self.settings.audio_text_opacity)))
+        self.audio_text_opacity_slider.valueChanged.connect(self.set_audio_text_opacity)
+        self.audio_text_opacity_value_label = QLabel(f"{self.audio_text_opacity_slider.value()}%")
+        self.audio_text_opacity_value_label.setObjectName("opacityLabel")
+        audio_text_row = QHBoxLayout()
+        audio_text_row.addWidget(QLabel("当前翻译字体"))
+        audio_text_row.addWidget(self.audio_text_opacity_slider, 1)
+        audio_text_row.addWidget(self.audio_text_opacity_value_label)
+
+        self.audio_mask_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.audio_mask_opacity_slider.setRange(0, 100)
+        self.audio_mask_opacity_slider.setValue(max(0, min(100, self.settings.audio_mask_opacity)))
+        self.audio_mask_opacity_slider.valueChanged.connect(self.set_audio_mask_opacity)
+        self.audio_mask_opacity_value_label = QLabel(f"{self.audio_mask_opacity_slider.value()}%")
+        self.audio_mask_opacity_value_label.setObjectName("opacityLabel")
+        audio_mask_row = QHBoxLayout()
+        audio_mask_row.addWidget(QLabel("当前翻译字体蒙版"))
+        audio_mask_row.addWidget(self.audio_mask_opacity_slider, 1)
+        audio_mask_row.addWidget(self.audio_mask_opacity_value_label)
+
+        audio_display_box = QGroupBox("音频翻译窗口")
+        audio_display_layout = QVBoxLayout(audio_display_box)
+        audio_display_layout.setContentsMargins(8, 8, 8, 8)
+        audio_display_layout.addWidget(self.audio_lock_button)
+        audio_display_layout.addLayout(audio_background_row)
+        audio_display_layout.addLayout(audio_text_row)
+        audio_display_layout.addLayout(audio_mask_row)
+
         self.monitor_result_window.set_background_opacity(
             self.background_opacity_slider.value()
         )
@@ -153,9 +210,11 @@ class MainWindow(QMainWindow):
         top = QVBoxLayout()
         top.addWidget(self.start_button)
         top.addWidget(self.monitor_button)
+        top.addWidget(self.audio_button)
         top.addWidget(self.manage_regions_button)
         top.addWidget(self.overlay_lock_button)
         top.addWidget(self.settings_button)
+        top.addWidget(audio_display_box)
         top.addLayout(background_opacity_row)
         top.addLayout(text_opacity_row)
         top.addLayout(mask_opacity_row)
@@ -382,7 +441,6 @@ class MainWindow(QMainWindow):
         self.monitor_result_window.set_background_opacity(value)
         self.settings.overlay_opacity = value
         save_settings(self.settings)
-
     def set_overlay_text_opacity(self, value: int) -> None:
         value = max(30, min(100, int(value)))
         self.text_opacity_value_label.setText(f"{value}%")
@@ -408,6 +466,34 @@ class MainWindow(QMainWindow):
         self.overlay_lock_button.setText(
             "解锁翻译窗口" if locked else "锁定翻译窗口"
         )
+
+    def toggle_audio_lock(self) -> None:
+        if self.audio_worker is not None:
+            self.audio_result_window.set_locked(not self.audio_result_window.locked)
+
+    def sync_audio_lock_button(self, locked: bool) -> None:
+        self.audio_lock_button.setText("解锁音频窗口" if locked else "锁定音频窗口")
+
+    def set_audio_background_opacity(self, value: int) -> None:
+        value = max(0, min(100, int(value)))
+        self.audio_background_opacity_value_label.setText(f"{value}%")
+        self.audio_result_window.set_background_opacity(value)
+        self.settings.audio_background_opacity = value
+        save_settings(self.settings)
+
+    def set_audio_text_opacity(self, value: int) -> None:
+        value = max(30, min(100, int(value)))
+        self.audio_text_opacity_value_label.setText(f"{value}%")
+        self.audio_result_window.set_text_opacity(value)
+        self.settings.audio_text_opacity = value
+        save_settings(self.settings)
+
+    def set_audio_mask_opacity(self, value: int) -> None:
+        value = max(0, min(100, int(value)))
+        self.audio_mask_opacity_value_label.setText(f"{value}%")
+        self.audio_result_window.set_mask_opacity(value)
+        self.settings.audio_mask_opacity = value
+        save_settings(self.settings)
 
     def monitor_tick(self) -> None:
         if (
@@ -550,8 +636,121 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         QMessageBox.warning(self, "Screen Translator", message)
 
+    def start_audio_translation(self) -> None:
+        if not (
+            self.settings.dashscope_api_key.strip()
+            or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+        ):
+            QMessageBox.warning(
+                self,
+                "音频翻译",
+                "请先在设置中填写阿里云 DashScope API Key，或设置 DASHSCOPE_API_KEY 环境变量。",
+            )
+            return
+        worker = self.audio_worker
+        if worker is not None:
+            try:
+                running = worker.isRunning()
+            except RuntimeError:
+                self.audio_worker = None
+                worker = None
+                running = False
+            if running:
+                self.stop_audio_translation()
+                return
+            self.audio_worker = None
+            try:
+                worker.deleteLater()
+            except RuntimeError:
+                pass
+        self._audio_stop_requested = False
+        self.audio_result_window.set_background_opacity(self.audio_background_opacity_slider.value())
+        self.audio_result_window.set_text_opacity(self.audio_text_opacity_slider.value())
+        self.audio_result_window.set_mask_opacity(self.audio_mask_opacity_slider.value())
+        self.audio_result_window.set_locked(False)
+        self.audio_lock_button.setEnabled(True)
+        self.audio_result_window.set_history_limit(self.settings.audio_history_limit)
+        self.audio_result_window.restore_geometry(self.settings)
+        self.audio_result_window.clear()
+        self.audio_result_window.show()
+        self.audio_result_window.raise_()
+        self.audio_worker = AudioTranslationWorker(self.settings)
+        self.audio_worker.partial.connect(self.audio_result_window.update_partial)
+        self.audio_worker.completed.connect(self.audio_result_window.append_result)
+        self.audio_worker.state_changed.connect(self.audio_result_window.set_state)
+        self.audio_worker.source_changed.connect(self.audio_result_window.set_source)
+        self.audio_worker.level_changed.connect(self.audio_result_window.set_level)
+        self.audio_worker.speech_changed.connect(self.audio_result_window.set_speech_state)
+        self.audio_worker.state_changed.connect(self.audio_state_changed)
+        self.audio_worker.failed.connect(self.audio_translation_failed)
+        self.audio_worker.finished.connect(
+            lambda worker=self.audio_worker: self.audio_worker_finished(worker)
+        )
+        self.audio_button.setText("停止音频翻译")
+        self.audio_worker.start()
+
+    def audio_translation_failed(self, message: str) -> None:
+        if self._audio_stop_requested:
+            return
+        self.audio_result_window.set_state(f"错误：{message}")
+        self.status_label.setText(f"音频翻译错误：{message}")
+
+    def audio_state_changed(self, state: str) -> None:
+        if not self._audio_stop_requested:
+            self.status_label.setText(f"音频翻译：{state}")
+
+    def audio_worker_finished(self, worker=None) -> None:
+        if worker is None:
+            worker = self.sender()
+        if worker is self.audio_worker:
+            was_stopping = self._audio_stop_requested
+            self.audio_worker = None
+            self.audio_button.setEnabled(True)
+            self.audio_button.setText("开始音频翻译")
+            if was_stopping:
+                self.status_label.setText("音频翻译：已停止")
+                self._audio_stop_requested = False
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except RuntimeError:
+                pass
+
+    def stop_audio_translation(self, wait: bool = False) -> None:
+        worker = self.audio_worker
+        self._audio_stop_requested = True
+        if worker is not None:
+            self.audio_button.setEnabled(False)
+            self.audio_button.setText("正在停止音频翻译")
+            self.status_label.setText("音频翻译：正在停止...")
+            try:
+                worker.stop()
+                if wait and worker.isRunning():
+                    worker.wait(5000)
+                if wait and not worker.isRunning():
+                    self.audio_worker = None
+                    worker.deleteLater()
+            except RuntimeError:
+                self.audio_worker = None
+        else:
+            self.audio_button.setEnabled(True)
+            self.audio_button.setText("开始音频翻译")
+            self.status_label.setText("音频翻译：已停止")
+            self._audio_stop_requested = False
+        self.audio_result_window.set_locked(False)
+        self.audio_lock_button.setEnabled(False)
+        self.audio_result_window.save_geometry(self.settings)
+        save_settings(self.settings)
+        self.audio_result_window.hide()
+        if wait:
+            self.audio_button.setEnabled(True)
+            self.audio_button.setText("开始音频翻译")
+            self.status_label.setText("音频翻译：已停止")
+            self._audio_stop_requested = False
     def closeEvent(self, event) -> None:
         self.stop_monitor()
+        self.audio_result_window.close()
+        self.stop_audio_translation(wait=True)
         self.monitor_result_window.close()
         self.unregister_hotkey()
         super().closeEvent(event)

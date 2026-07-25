@@ -16,10 +16,18 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
 
 Push-Location $projectRoot
 try {
-    & $pythonExe -m PyInstaller --noconfirm --clean --onedir --windowed `
-        --name ScreenTranslator `
-        --paths src `
-        src\screen_translator\__main__.py
+    $pyInstallerArgs = @(
+        "--noconfirm", "--clean", "--onedir", "--windowed",
+        "--name", "ScreenTranslator",
+        "--paths", "src",
+        "--collect-all", "dashscope",
+        "--hidden-import", "pyaudiowpatch"
+    )
+    $hasWebRtcVAD = (& $pythonExe -c "import importlib.util; print(1 if importlib.util.find_spec('webrtcvad') else 0)").Trim()
+    if ($hasWebRtcVAD -eq '1') {
+        $pyInstallerArgs += @("--hidden-import", "webrtcvad")
+    }
+    & $pythonExe -m PyInstaller @pyInstallerArgs src\screen_translator\__main__.py
 
     $tesseractSource = Join-Path $projectRoot 'vendor\tesseract'
     $tesseractExe = Join-Path $tesseractSource 'tesseract.exe'
@@ -39,4 +47,3 @@ try {
 } finally {
     Pop-Location
 }
-
