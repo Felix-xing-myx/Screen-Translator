@@ -1,8 +1,0 @@
-PySide6>=6.7,<7
-Pillow>=10.0,<12
-pytesseract>=0.3.13,<0.4
-requests>=2.31,<3
-mss>=9.0,<11
-dashscope>=1.25,<2
-webrtcvad-wheels>=2.0.14,<3; python_version < "3.14"
-PyAudioWPatch>=0.2.12.8,<0.3

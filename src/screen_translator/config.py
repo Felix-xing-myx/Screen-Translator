@@ -24,7 +24,7 @@ class AppSettings:
     source_language: str = "en"
     target_language: str = "zh-CN"
     hotkey: str = "Ctrl+Shift+T"
-    hotkey_enabled: bool = True
+    hotkey_enabled: bool = False
     monitor_hotkey: str = "Ctrl+Shift+M"
     monitor_hotkey_enabled: bool = False
     audio_hotkey: str = "Ctrl+Shift+A"

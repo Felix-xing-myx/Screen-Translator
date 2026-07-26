@@ -475,7 +475,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def tray_icon() -> QIcon:
         """Load the shared brand mark, with a code-only fallback for dev runs."""
-        icon_path = Path(__file__).resolve().parents[1] / "assets" / "screen_translator_mark.png"
+        icon_path = Path(__file__).resolve().parents[1] / "assets" / "screen_translator.ico"
         if icon_path.is_file():
             return QIcon(str(icon_path))
 

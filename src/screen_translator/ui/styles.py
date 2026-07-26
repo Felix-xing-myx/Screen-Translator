@@ -120,6 +120,14 @@ QLabel#brandSubtitle, QLabel#sectionSubtitle, QLabel#hintLabel {{
     color: {theme.text_muted};
 }}
 
+QLabel#externalLinkLabel {{
+    color: {theme.accent_bright};
+}}
+
+QLabel#externalLinkLabel:hover {{
+    color: {theme.text};
+}}
+
 QLabel#brandSubtitle {{
     font-size: 11px;
 }}

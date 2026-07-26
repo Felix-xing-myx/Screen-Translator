@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..config import AppSettings, save_settings
 from ..hotkeys import HotkeyEdit
-from .styles import MAIN_STYLE_SHEET
+from .styles import DARK_THEME, MAIN_STYLE_SHEET
 
 
 class SettingsDialog(QDialog):
@@ -72,6 +73,17 @@ class SettingsDialog(QDialog):
         self.qwen_console_link = QLabel(
             f'<a href="{self.QWEN_CONSOLE_URL}">打开阿里云百炼控制台，申请 API Key</a>'
         )
+        self.qwen_console_link.setObjectName("externalLinkLabel")
+        link_palette = self.qwen_console_link.palette()
+        link_palette.setColor(
+            QPalette.ColorRole.Link,
+            DARK_THEME.accent_bright,
+        )
+        link_palette.setColor(
+            QPalette.ColorRole.LinkVisited,
+            DARK_THEME.accent,
+        )
+        self.qwen_console_link.setPalette(link_palette)
         self.qwen_console_link.setOpenExternalLinks(True)
         self.qwen_console_link.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextBrowserInteraction

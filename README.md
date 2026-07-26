@@ -1,228 +1,189 @@
 # Screen Translator
 
-一个面向 Windows 的桌面翻译工具，支持：
+Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本为 1.0.1。
+它把本地 OCR、屏幕区域监控和实时音频翻译组合在一个轻量的 Qt 浮窗工作流中。
 
-- 截图区域 OCR 后翻译文字。
-- 持续监控屏幕中的指定区域，检测文字变化后自动 OCR 和翻译。
-- 读取系统声音、指定进程声音或麦克风，调用阿里云 DashScope Gummy 实时语音翻译接口。
-- 使用半透明、圆角、可锁定和鼠标穿透的翻译浮窗显示结果。
+## 功能
 
-## 主要功能
+- 截图翻译：框选屏幕区域，使用本机 Tesseract OCR 后翻译。
+- 持续监控：监控多个屏幕区域，检测文字变化后自动识别和翻译。
+- 音频翻译：捕获系统声音、指定进程声音或麦克风，调用 DashScope Gummy 实时翻译。
+- 结果浮窗：支持透明度、字体、拖动、调整大小、锁定和鼠标穿透。
+- 系统托盘：关闭主窗口后驻留托盘，左键打开，右键打开主窗口或退出。
+- 单实例运行：重复启动不会创建第二个程序进程。
 
-### 截图翻译
-
-1. 框选屏幕上的文字区域。
-2. 使用本机 Tesseract OCR 识别文字。
-3. 调用 MyMemory 或 LibreTranslate 兼容接口翻译。
-4. 在主界面和翻译结果窗口中显示原文与译文。
-
-截图不会自动保存，图像只在内存中处理。
-
-### 屏幕持续监控
-
-- 支持连续框选多个监控区域。
-- 只有检测到区域文字发生变化时才重新 OCR 和翻译。
-- 支持设置扫描间隔、管理区域、启用/停用区域。
-- 结果显示在置顶的半透明翻译窗口中。
-- 翻译窗口支持拖动、锁定、鼠标穿透、自动滚动和透明度调整。
-
-### 音频实时翻译
-
-音频翻译是独立功能，不会改变原有的截图 OCR 和屏幕监控流程。
-
-支持三种音频来源：
-
-- 系统全局声音：使用 WASAPI Loopback 捕获默认输出设备。
-- 指定进程声音：使用 Windows Application Loopback 捕获目标进程，可包含其子进程。
-- 麦克风：使用普通音频输入设备。
-
-音频处理流程如下：
-
-~~~text
-音频设备
-  -> 统一转换为 16 kHz、单声道、16-bit PCM
-  -> 本地 VAD 检测语音并切分
-  -> 仅在检测到语音时上传音频
-  -> DashScope Gummy 返回语音识别文本和翻译文本
-  -> 音频翻译窗口显示当前句子和历史记录
-~~~
-
-本地 VAD 只负责检测是否有声音、保留前后缓冲和切分句子。当前显示的原文识别结果和中文译文都来自阿里云实时接口，不是本地语音识别模型。
-
-音频窗口功能：
-
-- 当前句子重点显示，原文和译文支持多行滚动。
-- 历史记录最多保留 10 句，并自动滚动到最新结果。
-- 可分别调整主背景及历史记录、当前翻译字体、当前翻译字体蒙版的不透明度。
-- 支持窗口锁定、鼠标穿透和解锁后拖动。
-- 音频设备或 API 临时异常时，后台线程会尝试恢复监听。
-
-## 运行环境
+## 运行要求
 
 - Windows 10/11。
-- Python >=3.11,<3.15，支持 Python 3.14。
-- 截图 OCR 功能需要额外安装 Tesseract OCR。
-- 音频功能需要 PyAudioWPatch 和 DashScope API Key。
-- 需要网络连接才能使用在线翻译和阿里云音频翻译接口。
+- Python 3.11-3.14，仅开发运行需要 Python。
+- 网络连接，用于在线翻译和 DashScope 音频翻译。
+- 截图 OCR 使用项目内置的 Tesseract Windows runtime。
+- 进程级音频捕获需要 Windows 10 Build 20348 或更高版本。
 
-进程级音频捕获使用 Windows Application Loopback API，需要 Windows 10 Build 20348 或更高版本。系统全局声音和麦克风模式不依赖该 API。
+正式用户不需要安装 Python、PySide6、Tesseract 或 PyInstaller；直接使用
+发布的安装包即可。
 
-### Python 3.14 说明
+## 开发环境
 
-webrtcvad-wheels 当前只在 Python 3.14 以下版本尝试安装。Python 3.14 环境下，项目会自动使用无额外依赖的 Energy VAD 回退实现，因此仍然可以运行音频翻译功能，但 VAD 行为和 WebRTC VAD 略有不同。
+项目采用标准 Python src-layout：
 
-## 安装和启动
-
-推荐使用项目提供的 PowerShell 启动脚本：
-
-~~~powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\run.ps1
+~~~text
+pyproject.toml
+  -> uv.lock
+  -> .venv
+  -> editable install of src/screen_translator
 ~~~
 
-脚本会自动：
+推荐使用 uv 管理环境。项目根目录就是 E:\translate，不能把
+src\screen_translator 单独作为工作区打开。
 
-1. 创建 .venv 虚拟环境。
-2. 安装 requirements.txt 中的运行依赖。
-3. 设置源码路径。
-4. 启动程序。
+### 初始化环境
 
-也可以手动运行：
+在项目根目录执行：
 
 ~~~powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-$env:PYTHONPATH = "$PWD\src"
-.\.venv\Scripts\python.exe -m screen_translator
+.\scripts\bootstrap.ps1
 ~~~
 
-旧的开发入口仍然可用：
+该脚本会同步 pyproject.toml 中的依赖，创建或更新项目根目录下的 .venv，
+并以 editable mode 安装当前源码。
+
+如果已经安装 uv，也可以直接执行：
 
 ~~~powershell
-.\.venv\Scripts\python.exe main.py
+uv sync --extra dev
 ~~~
 
-## 首次配置
+没有 uv 时，bootstrap.ps1 会自动回退到 Python venv 和 pip。
 
-### 截图翻译
+### 启动和测试
 
-在“设置”中配置：
+~~~powershell
+.\scripts\run.ps1
+.\scripts\test.ps1
+~~~
 
-- 截图翻译、持续监控和音频翻译分别拥有独立的热键与“启用”开关；截图翻译默认使用 Ctrl+Shift+T，持续监控和音频翻译热键默认关闭。
-- 翻译接口地址，默认：
+等价的直接命令：
 
-  https://api.mymemory.translated.net/get
+~~~powershell
+uv run --extra dev python -m screen_translator
+uv run --extra dev python -m pytest -q
+uv run --extra dev ruff check src tests
+~~~
 
-- 翻译接口 API key（可选）。
-- tesseract.exe 的完整路径。
+正常开发不需要设置 PYTHONPATH，也不需要手动执行 main.py。
 
-MyMemory 适合小规模测试，不适合发送密码、隐私资料或大量文本。需要更稳定的服务时，可以配置自己的 LibreTranslate 服务器或其他兼容接口。
+## 配置
 
-### 音频翻译
+设置中心可以配置：
 
-在“设置”中配置：
+- 截图翻译、持续监控和音频翻译的独立热键。
+- Qwen-MT、MyMemory 或自定义翻译接口。
+- Tesseract 路径、语言、音频来源和目标语言。
+- VAD 灵敏度、句尾静音阈值和历史记录数量。
+- 翻译浮窗和音频浮窗的大小、位置、透明度和锁定状态。
 
-- 阿里云 DashScope API Key。
-- 音频来源：系统全局声音、指定进程或麦克风。
-- 音频设备。
-- 目标进程和是否包含子进程。
-- 音频源语言和目标语言。
-- VAD 灵敏度。
-- 句尾静音阈值，默认 500 毫秒。
-- 历史记录数量，最多 10 句。
+用户设置保存于：
 
-API Key 也可以通过环境变量提供：
+~~~text
+%APPDATA%\ScreenTranslator\settings.json
+~~~
+
+API Key 不写入源码、安装包或构建配置。也可以使用环境变量：
 
 ~~~powershell
 $env:DASHSCOPE_API_KEY = "your-api-key"
-.\run.ps1
+.\scripts\run.ps1
 ~~~
 
-音频翻译主界面中还可以调整音频窗口的三项透明度，并使用“锁定音频窗口”按钮启用鼠标穿透。锁定后需要通过主界面按钮解锁。
+MyMemory 仅建议用于小规模测试。发送敏感内容或大量文本前，应使用自己的
+翻译服务并确认服务商的商业和隐私条款。
 
-## 测试
+## 构建
 
-安装开发依赖：
-
-~~~powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-~~~
-
-运行全部测试：
-
-~~~powershell
-.\.venv\Scripts\python.exe -m pytest -q
-~~~
-
-运行源码编译检查：
-
-~~~powershell
-.\.venv\Scripts\python.exe -m compileall -q src tests
-~~~
-
-测试覆盖配置读写、文本翻译、快捷键、文本处理，以及 WebRTC VAD / Energy VAD 回退和音频切分逻辑。
-
-## 打包
-
-项目使用 PyInstaller 打包。先安装开发依赖，然后运行：
+### PyInstaller 目录版
 
 ~~~powershell
 .\scripts\build.ps1
 ~~~
 
-如果项目没有完整的内置 Tesseract，可以生成依赖外部 Tesseract 的开发版：
-
-~~~powershell
-.\scripts\build.ps1 -AllowExternalTesseract
-~~~
-
-默认输出目录：
+输出：
 
 ~~~text
-dist\ScreenTranslator
+dist\ScreenTranslator\
 ~~~
 
-正式发布时，建议将以下文件放入项目目录：
+该目录可以直接作为绿色版程序目录。正式构建要求存在：
 
 ~~~text
 vendor\tesseract\tesseract.exe
 vendor\tesseract\tessdata\eng.traineddata
 ~~~
 
-打包脚本会自动收集 DashScope、PyAudioWPatch，以及当前环境中可用的 WebRTC VAD 模块。旧的 dist 不会自动同步源码修改，修改音频功能后需要重新打包。
+### Windows 安装版和免安装版
+
+先安装 Inno Setup 6，然后执行：
+
+~~~powershell
+.\scripts\package.ps1
+~~~
+
+输出：
+
+~~~text
+dist\installer\ScreenTranslator-Setup-v1.0.1.exe
+dist\portable\ScreenTranslator-Portable-v1.0.1.zip
+~~~
+
+如果只需要目录版，不需要安装 Inno Setup，执行 build.ps1 即可。
 
 ## 项目结构
 
 ~~~text
-src/screen_translator/
-├── application.py       # 应用入口
-├── capture.py           # 截图选择和监控区域
-├── ocr.py               # Tesseract OCR
-├── translator.py        # 文本翻译接口
-├── workers.py           # 截图翻译线程
-├── audio_capture.py     # 全局声音、进程声音、麦克风采集
-├── windows_loopback.py  # Windows Application Loopback API
-├── vad.py               # WebRTC VAD 和 Energy VAD 回退
-├── audio_translation.py # 音频切片、API 会话和重试
-└── ui/
-    ├── main_window.py   # 主界面和功能协调
-    ├── results.py       # 截图持续翻译窗口
-    ├── audio_results.py # 音频翻译窗口
-    └── settings.py      # 设置窗口
+ScreenTranslator/
+├── src/screen_translator/       应用源码
+│   ├── application.py           Qt 应用入口
+│   ├── config.py                设置读写
+│   ├── models.py                共享数据对象
+│   ├── capture.py               截图选择和监控区域
+│   ├── screen_capture.py        屏幕捕获 adapter
+│   ├── ocr.py                   Tesseract adapter
+│   ├── translator.py             文本翻译 adapter
+│   ├── audio_capture.py         音频采集 adapter
+│   ├── windows_loopback.py       Windows Application Loopback
+│   ├── audio_translation.py      音频会话和翻译 workflow
+│   ├── workers.py                后台任务
+│   ├── vad.py                    语音活动检测
+│   ├── hotkeys.py                全局热键
+│   └── ui/                       主窗口、设置、浮窗和组件
+├── tests/                        自动化测试
+├── scripts/                      环境、运行、测试和构建入口
+├── packaging/                    Inno Setup 配置和安装器语言文件
+├── vendor/tesseract/             随程序分发的 OCR runtime
+├── docs/                         架构和设计资料
+├── pyproject.toml                依赖、构建和工具配置
+├── uv.lock                       可复现依赖解析结果
+├── AGENTS.md                     agent 工作区和环境说明
+└── CONTRIBUTING.md               开发约定
 ~~~
 
-配置文件默认保存在：
+生成目录 build、dist、tmp、.venv 和缓存目录不属于源码，已加入 Git 忽略规则。
 
-~~~text
-%APPDATA%\ScreenTranslator\settings.json
-~~~
+更详细的模块职责和运行流程见 docs\architecture.md；开发命令见
+CONTRIBUTING.md。
 
-## 当前限制
+## 限制和兼容性
 
-- 在线翻译和音频翻译受网络延迟、接口配额、服务端限制和 API Key 状态影响，不能保证所有句子都在固定时间内返回。
-- 进程级音频捕获需要 Windows 10 Build 20348 或更高版本；目标进程必须实际输出音频。
-- 独占全屏 DirectX 游戏、管理员权限程序和反作弊保护程序，可能阻止桌面截图、窗口覆盖、鼠标穿透或全局热键。
-- 音频设备被其他程序独占、设备断开或系统音频格式异常时，音频线程会报告错误并尝试恢复；必要时需要重新选择设备。
-- Tesseract 只用于截图 OCR，不是音频翻译的依赖。
-- 音频翻译仍然依赖云端 DashScope 服务；VAD 在本地运行主要用于减少静音上传和控制句子长度。
-- 半透明窗口的实际覆盖效果受 Windows 缩放比例、全屏模式、显卡驱动和窗口权限影响。
+- 在线翻译和音频翻译受网络、API 配额、延迟和服务商条款影响。
+- 独占全屏 DirectX、管理员权限程序和反作弊保护程序可能阻止截图、浮窗、
+  鼠标穿透或全局热键。
+- 目标进程必须实际输出音频，进程级捕获才有有效结果。
+- 音频 VAD 在 Python 3.14 下使用 Energy VAD 回退实现。
+- API Key、OCR 文本和音频可能发送到第三方服务，请在商业发布时提供清晰的
+  隐私政策和第三方服务说明。
+
+## 许可证和发布
+
+项目依赖的 Qt/PySide6、Tesseract、Pillow、requests、DashScope SDK、
+PyAudioWPatch 等组件各自遵循其许可证。商业发布前应随安装包提供完整的
+第三方许可证和 NOTICE 文件，并确认翻译 API 的商业使用条款。

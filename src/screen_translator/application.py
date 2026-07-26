@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sys
 import ctypes
+import tempfile
 from pathlib import Path
 
+from PySide6.QtCore import QLockFile
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -31,7 +33,13 @@ def main() -> int:
     configure_tesseract()
     app = QApplication(sys.argv)
     app.setApplicationName("ScreenTranslator")
-    icon_path = Path(__file__).resolve().parent / "assets" / "screen_translator_mark.png"
+    instance_lock = QLockFile(
+        str(Path(tempfile.gettempdir()) / "ScreenTranslator.instance.lock")
+    )
+    if not instance_lock.tryLock(100):
+        return 0
+
+    icon_path = Path(__file__).resolve().parent / "assets" / "screen_translator.ico"
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
     app.setQuitOnLastWindowClosed(False)
