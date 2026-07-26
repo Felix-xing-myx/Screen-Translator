@@ -13,4 +13,3 @@ class MonitorRegion:
     enabled: bool = True
     last_text: str = ""
     translated: str = ""
-

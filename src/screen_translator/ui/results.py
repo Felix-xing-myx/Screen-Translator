@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..text_utils import compact_display_text
+from .overlay import OverlayResizeMixin
 
 
 class WindowTitleBar(QWidget):
@@ -49,7 +51,43 @@ class WindowTitleBar(QWidget):
         self.lock_label.setText("LOCKED" if locked else "")
 
 
-class MonitorResultWindow(QDialog):
+class WrappedTranslationLabel(QLabel):
+    """A plain-text label whose height remains correct as the window resizes."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(text, parent)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        if width <= 0:
+            return super().heightForWidth(width)
+        document = QTextDocument()
+        document.setDefaultFont(self.font())
+        document.setPlainText(self.text())
+        text_width = max(
+            1,
+            width
+            - self.contentsMargins().left()
+            - self.contentsMargins().right(),
+        )
+        document.setTextWidth(text_width)
+        return (
+            math.ceil(document.size().height())
+            + self.contentsMargins().top()
+            + self.contentsMargins().bottom()
+            + 2
+        )
+
+
+class MonitorResultWindow(OverlayResizeMixin, QDialog):
     stop_requested = Signal()
     lock_changed = Signal(bool)
 
@@ -66,16 +104,16 @@ class MonitorResultWindow(QDialog):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
-        # 翻译悬浮窗固定为默认尺寸，避免后续出现边框缩放和布局互相影响。
-        self.setFixedSize(520, 220)
+        self.setMinimumSize(360, 150)
+        self.resize(520, 220)
 
         self.card = QWidget(self)
         self.card.setObjectName("resultCard")
         self.card.setMouseTracking(True)
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 90))
         self.card.setGraphicsEffect(shadow)
         self.card_shadow = shadow
 
@@ -91,6 +129,10 @@ class MonitorResultWindow(QDialog):
             Qt.WidgetAttribute.WA_TranslucentBackground, True
         )
         self.translation_content.setAutoFillBackground(False)
+        self.translation_content.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         content_layout = QVBoxLayout(self.translation_content)
         content_layout.setContentsMargins(4, 4, 4, 4)
         content_layout.setSpacing(6)
@@ -110,6 +152,10 @@ class MonitorResultWindow(QDialog):
         self.translation_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        self.translation_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.translation_scroll.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.translation_scroll.setContentsMargins(0, 0, 0, 0)
         self.translation_scroll.viewport().setAttribute(
             Qt.WidgetAttribute.WA_TranslucentBackground, True
@@ -138,23 +184,17 @@ class MonitorResultWindow(QDialog):
         self.scroll_direction = 1
         self.display_revision = 0
         self.pending_scroll_state: tuple[int, bool, int] | None = None
-
-        # 子控件（标题栏、滚动区域、文字标签）会分别接收鼠标事件。
-        # 在每个子控件上安装过滤器会导致坐标系和事件处理顺序不一致，
-        # 所以改成由 QApplication 统一观察本窗口及其所有子控件。
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+        self.install_overlay_resize_filter()
 
     def update_result(self, original: str, translated: str) -> None:
-        cleaned = compact_display_text(translated)
+        cleaned = compact_display_text(translated, preserve_lines=True)
         self.set_display_entries([(None, cleaned)] if cleaned else [])
 
     def update_regions(self, regions: list[tuple[int, str]]) -> None:
         """在同一个滚动内容中显示所有区域的紧凑译文。"""
         entries = []
         for region_id, translated in regions:
-            cleaned = compact_display_text(translated)
+            cleaned = compact_display_text(translated, preserve_lines=True)
             if cleaned:
                 entries.append((region_id, cleaned))
         self.set_display_entries(entries)
@@ -178,6 +218,10 @@ class MonitorResultWindow(QDialog):
             card.setObjectName("translationCard")
             card.setFrameShape(QFrame.Shape.NoFrame)
             card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            card.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(8, 6, 8, 6)
             card_layout.setSpacing(2)
@@ -187,14 +231,9 @@ class MonitorResultWindow(QDialog):
                 header.setObjectName("resultRegionHeader")
                 card_layout.addWidget(header)
 
-            body = QLabel(text, card)
+            body = WrappedTranslationLabel(text, card)
             body.setObjectName("resultTranslation")
-            body.setWordWrap(True)
             body.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-            body.setSizePolicy(
-                QSizePolicy.Policy.Expanding,
-                QSizePolicy.Policy.Minimum,
-            )
             body.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             body.setAutoFillBackground(False)
             card_layout.addWidget(body)
@@ -203,6 +242,9 @@ class MonitorResultWindow(QDialog):
 
         self.show()
         self.raise_()
+        self.translation_cards_layout.activate()
+        self._update_translation_body_heights()
+        self.translation_content.updateGeometry()
         QTimer.singleShot(0, lambda rev=revision: self.fit_translation_font(rev))
 
     def clear_result(self, restart_scroll: bool = True) -> None:
@@ -239,9 +281,40 @@ class MonitorResultWindow(QDialog):
         for _card, body in self.translation_cards:
             body.setFont(selected_font)
             body.updateGeometry()
+        self.translation_cards_layout.activate()
+        self._update_translation_body_heights()
         self.translation_content.adjustSize()
+        self.translation_content.updateGeometry()
         self.translation_scroll.updateGeometry()
         QTimer.singleShot(0, lambda rev=revision: self.restore_scroll_after_update(rev))
+
+    def _update_translation_body_heights(self) -> None:
+        """Give wrapped labels their real height at the current viewport width.
+
+        QScrollArea may ask its child for a size hint before the child has
+        received its final width.  Without this second pass, the content
+        widget can become taller than its card, leaving a blank scrollable
+        tail or clipping the label inside the card.
+        """
+        for _card, body in self.translation_cards:
+            if body.width() <= 0:
+                continue
+            body.setMinimumHeight(max(1, body.heightForWidth(body.width())))
+            body.updateGeometry()
+        self.translation_cards_layout.activate()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._refresh_translation_layout_after_resize)
+
+    def _refresh_translation_layout_after_resize(self) -> None:
+        if not self.translation_cards:
+            return
+        self.translation_cards_layout.activate()
+        self._update_translation_body_heights()
+        self.translation_content.adjustSize()
+        self.translation_content.updateGeometry()
+        self.translation_scroll.updateGeometry()
 
     def restore_scroll_after_update(self, revision: int) -> None:
         if revision != self.display_revision:
@@ -330,18 +403,19 @@ class MonitorResultWindow(QDialog):
         self.card_shadow.setColor(QColor(0, 0, 0, round(150 * self.background_opacity / 100)))
         self.translation_content.setStyleSheet("background: transparent;")
         self.setStyleSheet(
-            f"QWidget#resultCard {{ background: rgba(20, 25, 38, {background_alpha}); "
-            f"border: 1px solid rgba(120, 180, 255, {border_alpha}); border-radius: 16px; }}"
-            "QWidget#resultTitleBar { background: transparent; }"
-            f"QLabel#resultTitle {{ color: rgba(219, 234, 254, {chrome_alpha}); font-size: 12px; font-weight: 600; }}"
-            f"QLabel#resultLockState {{ color: rgba(125, 211, 252, {chrome_alpha}); font-size: 10px; font-weight: 700; }}"
-            f"QFrame#translationCard {{ background: rgba(15, 23, 42, {mask_alpha}); border-radius: 8px; }}"
-            f"QLabel#resultRegionHeader {{ color: rgba(125, 211, 252, {text_alpha}); font-size: 10px; font-weight: 700; }}"
-            f"QLabel#resultTranslation {{ color: rgba(248, 250, 252, {text_alpha}); padding: 1px; }}"
+            f"QWidget#resultCard {{ background: rgba(10, 17, 22, {background_alpha}); "
+            f"border: 1px solid rgba(107, 216, 255, {border_alpha}); border-radius: 8px; }}"
+            "QWidget#resultTitleBar { background: transparent; "
+            "border-bottom: 1px solid rgba(93, 112, 122, 120); }"
+            f"QLabel#resultTitle {{ color: rgba(231, 238, 241, {chrome_alpha}); font-size: 12px; font-weight: 600; }}"
+            f"QLabel#resultLockState {{ color: rgba(195, 241, 255, {chrome_alpha}); font-size: 10px; font-weight: 600; }}"
+            f"QFrame#translationCard {{ background: rgba(17, 27, 33, {mask_alpha}); border: 1px solid rgba(44, 60, 69, 130); border-radius: 6px; }}"
+            f"QLabel#resultRegionHeader {{ color: rgba(107, 216, 255, {text_alpha}); font-size: 10px; font-weight: 600; }}"
+            f"QLabel#resultTranslation {{ color: rgba(231, 238, 241, {text_alpha}); padding: 1px; }}"
             "QScrollArea, QScrollArea > QWidget { background: transparent; border: none; }"
             "QScrollArea > QWidget#qt_scrollarea_viewport { background: transparent; }"
-            "QScrollBar:vertical { background: rgba(255,255,255,25); width: 6px; }"
-            "QScrollBar::handle:vertical { background: rgba(150,200,255,150); "
+            "QScrollBar:vertical { background: transparent; width: 7px; }"
+            "QScrollBar::handle:vertical { background: rgba(93,112,122,180); "
             "border-radius: 3px; min-height: 24px; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
         )
@@ -416,28 +490,6 @@ class MonitorResultWindow(QDialog):
             pass
 
     def eventFilter(self, watched, event) -> bool:
-        if not self.is_result_widget(watched):
-            return super().eventFilter(watched, event)
-        if self.locked:
-            return super().eventFilter(watched, event)
-
-        # QApplication 级过滤器能拿到所有子控件的鼠标事件。
-        # 悬浮窗没有按钮，因此解锁时整个窗口都可用于拖动位置。
-        if event.type() == QEvent.Type.MouseButtonPress:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.drag_start = event.globalPosition().toPoint()
-                self.drag_origin = self.frameGeometry().topLeft()
-                return True
-        elif event.type() == QEvent.Type.MouseMove:
-            global_position = event.globalPosition().toPoint()
-            if self.drag_start is not None and self.drag_origin is not None:
-                self.move(self.drag_origin + global_position - self.drag_start)
-                return True
-        elif event.type() == QEvent.Type.MouseButtonRelease:
-            if event.button() == Qt.MouseButton.LeftButton:
-                self.drag_start = None
-                self.drag_origin = None
-                return True
         return super().eventFilter(watched, event)
 
     def is_result_widget(self, watched) -> bool:
@@ -458,9 +510,9 @@ class MonitorResultWindow(QDialog):
         self.lock_changed.emit(locked)
 
     def restore_geometry(self, settings: AppSettings, screen_geometry: QRect) -> None:
-        width = 520
-        height = 220
-        self.setFixedSize(width, height)
+        width = max(self.minimumWidth(), settings.overlay_width)
+        height = max(self.minimumHeight(), settings.overlay_height)
+        self.resize(width, height)
         if settings.overlay_x < 0 or settings.overlay_y < 0:
             self.move(
                 screen_geometry.right() - width - 20,
@@ -475,22 +527,24 @@ class MonitorResultWindow(QDialog):
         geometry = self.geometry()
         settings.overlay_x = geometry.x()
         settings.overlay_y = geometry.y()
+        settings.overlay_width = geometry.width()
+        settings.overlay_height = geometry.height()
 
     def nativeEvent(self, event_type, message):
         if event_type == b"windows_generic_MSG":
             try:
                 msg = wintypes.MSG.from_address(int(message))
                 if msg.message == 0x0084:  # WM_NCHITTEST
-                    if self.locked:
-                        return True, -1  # HTTRANSPARENT: 鼠标事件穿透到下方窗口
+                    # Keep the window in the client hit-test path.  Dragging
+                    # is handled by OverlayResizeMixin so it can coexist
+                    # with the same event stream used for edge resizing.
+                    pass
             except (TypeError, ValueError):
                 pass
         return super().nativeEvent(event_type, message)
 
     def closeEvent(self, event) -> None:
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
+        self.remove_overlay_resize_filter()
         self.scroll_timer.stop()
         self.scroll_pause_timer.stop()
         self.stop_requested.emit()

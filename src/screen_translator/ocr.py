@@ -46,10 +46,8 @@ def configure_tesseract(configured_path: str = "") -> Path | None:
     return bundled
 
 
-
-def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
-    """识别屏幕截图中的英文，集中处理路径、预处理和备用版面模式。"""
-    configured_path = tesseract_path.strip()
+def _configure_for_ocr(configured_path: str) -> None:
+    configured_path = configured_path.strip()
     if configured_path:
         candidate = Path(configured_path)
         if candidate.is_dir():
@@ -60,13 +58,15 @@ def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
                 "请在设置中选择 E:\\Tesseract OCR\\tesseract.exe。"
             )
         pytesseract.pytesseract.tesseract_cmd = str(candidate)
-    else:
-        bundled_path = bundled_tesseract_path()
-        if bundled_path:
-            pytesseract.pytesseract.tesseract_cmd = str(bundled_path)
+        return
 
-    # 游戏字幕和网页小字通常只有十几像素高。先放大、转灰度并增强
-    # 对比度，可以显著降低“截图有字但 OCR 返回空”的情况。
+    bundled_path = bundled_tesseract_path()
+    if bundled_path:
+        pytesseract.pytesseract.tesseract_cmd = str(bundled_path)
+
+
+def _prepare_ocr_image(image: Image.Image) -> Image.Image:
+    """Prepare a screenshot for the single-region OCR workflow."""
     ocr_image = ImageOps.grayscale(image.convert("RGB"))
     ocr_image = ImageOps.autocontrast(ocr_image)
     if max(ocr_image.size) < 3200:
@@ -74,9 +74,14 @@ def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
             (ocr_image.width * 2, ocr_image.height * 2),
             Image.Resampling.LANCZOS,
         )
+    return ocr_image
 
-    # psm 11 适合屏幕上分散的字幕、按钮和多行文本；如果当前画面
-    # 更像一个完整段落，再用 psm 6 做一次备用识别。
+
+def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
+    """Recognize English text from one user-selected screenshot region."""
+    _configure_for_ocr(tesseract_path)
+    ocr_image = _prepare_ocr_image(image)
+
     text = pytesseract.image_to_string(
         ocr_image, lang="eng", config="--oem 3 --psm 11"
     ).strip()

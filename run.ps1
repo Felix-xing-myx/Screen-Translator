@@ -11,6 +11,21 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     & $pythonCommand.Source -m venv (Join-Path $projectRoot '.venv')
 }
 
-& $venvPython -m pip install -r (Join-Path $projectRoot 'requirements.txt')
+$requirementsPath = Join-Path $projectRoot 'requirements.txt'
+$requirementsStamp = Join-Path $projectRoot '.venv\.requirements.sha256'
+$requirementsHash = (Get-FileHash -LiteralPath $requirementsPath -Algorithm SHA256).Hash
+$installedHash = if (Test-Path -LiteralPath $requirementsStamp) {
+    (Get-Content -LiteralPath $requirementsStamp -Raw).Trim()
+} else {
+    ''
+}
+
+if ($installedHash -ne $requirementsHash) {
+    & $venvPython -m pip install -r $requirementsPath
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    Set-Content -LiteralPath $requirementsStamp -Value $requirementsHash -Encoding ascii
+}
 $env:PYTHONPATH = Join-Path $projectRoot 'src'
 & $venvPython -m screen_translator

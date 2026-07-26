@@ -6,7 +6,14 @@ import ctypes
 import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QRect,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppSettings
+from .overlay import OverlayResizeMixin
 
 
 class AudioTitleBar(QWidget):
@@ -45,7 +53,7 @@ class AudioTitleBar(QWidget):
         self.lock_label.setText("LOCKED" if locked else "")
 
 
-class AudioTranslationWindow(QDialog):
+class AudioTranslationWindow(OverlayResizeMixin, QDialog):
     """Compact translucent overlay for current and recent audio translations."""
 
     stop_requested = Signal()
@@ -58,6 +66,23 @@ class AudioTranslationWindow(QDialog):
         self.drag_start: QPoint | None = None
         self._history_limit = 10
         self._history_cards: list[QFrame] = []
+        self._current_update_revision = 0
+        self._history_scroll_revision = 0
+        self._current_follow_bottom = {
+            "original": False,
+            "translation": False,
+        }
+        self._current_scroll_timers: dict[str, QTimer] = {}
+        self._current_hold_timer = QTimer(self)
+        self._current_hold_timer.setSingleShot(True)
+        self._current_hold_timer.timeout.connect(self._release_current_hold)
+        self._current_hold_active = False
+        self._pending_partial: tuple[str, str] | None = None
+        self._pending_completed: list[tuple[str, str]] = []
+        self._current_hold_ms = 2200
+        self._show_current_original = True
+        self._font_scale_multiplier = 1.0
+        self._font_scale = 1.0
 
         self.setWindowTitle("音频实时翻译")
         self.setWindowFlags(
@@ -67,14 +92,17 @@ class AudioTranslationWindow(QDialog):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
-        self.setFixedSize(560, 430)
+        self.setMinimumSize(400, 150)
+        self.resize(560, 430)
+        # 卡片四周保留了阴影空间，原生窗口边缘命中测试需要覆盖这段可见边界。
+        self.resize_border = 18
 
         self.card = QWidget(self)
         self.card.setObjectName("audioCard")
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(14)
-        shadow.setOffset(0, 3)
-        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 90))
         self.card.setGraphicsEffect(shadow)
         self.card_shadow = shadow
 
@@ -95,6 +123,9 @@ class AudioTranslationWindow(QDialog):
         status_row.setContentsMargins(4, 0, 4, 0)
         status_row.addWidget(self.state_label, 1)
         status_row.addWidget(self.speech_label)
+        self.status_widget = QWidget()
+        self.status_widget.setObjectName("audioStatusRow")
+        self.status_widget.setLayout(status_row)
 
         self.current_original = self._make_text_edit(
             "检测到声音后显示原文", "audioCurrentOriginal"
@@ -102,25 +133,34 @@ class AudioTranslationWindow(QDialog):
         self.current_translation = self._make_text_edit(
             "翻译结果将在这里显示", "audioCurrentTranslation"
         )
-        self.current_original.setFixedHeight(48)
-        self.current_translation.setFixedHeight(62)
+        self.current_original.setMinimumHeight(28)
+        self.current_translation.setMinimumHeight(36)
+        self.current_original.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.current_translation.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        for edit in (self.current_original, self.current_translation):
+            scrollbar = edit.verticalScrollBar()
+            scrollbar.sliderPressed.connect(
+                lambda edit=edit: self._cancel_current_scroll_animation(edit)
+            )
+            scrollbar.actionTriggered.connect(
+                lambda _action, edit=edit: self._cancel_current_scroll_animation(edit)
+            )
 
         current_panel = QFrame()
         current_panel.setObjectName("audioCurrentMask")
+        current_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.current_panel = current_panel
         current_layout = QVBoxLayout(current_panel)
         current_layout.setContentsMargins(10, 7, 10, 8)
         current_layout.setSpacing(2)
-        for caption, edit in (
-            ("原文", self.current_original),
-            ("当前译文", self.current_translation),
-        ):
-            label = QLabel(caption)
-            label.setObjectName("audioCurrentCaption")
-            current_layout.addWidget(label)
-            current_layout.addWidget(edit)
-
-        history_label = QLabel("最近记录（最多 10 句）")
-        history_label.setObjectName("audioSectionTitle")
+        current_layout.addWidget(self.current_original, 1)
+        current_layout.addWidget(self.current_translation, 1)
         self.history_content = QWidget()
         self.history_content.setObjectName("audioHistoryContent")
         self.history_content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -144,34 +184,97 @@ class AudioTranslationWindow(QDialog):
         self.history_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.history_scroll.setMinimumHeight(118)
+        self.history_scroll.setMinimumHeight(0)
         self.history_scroll.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored
         )
 
         card_layout = QVBoxLayout(self.card)
+        self.card_layout = card_layout
         card_layout.setContentsMargins(8, 7, 8, 8)
         card_layout.setSpacing(5)
         card_layout.addWidget(self.title_bar)
-        card_layout.addLayout(status_row)
+        card_layout.addWidget(self.status_widget)
         card_layout.addWidget(self.source_label)
         card_layout.addWidget(self.level_bar)
         card_layout.addWidget(current_panel)
-        card_layout.addWidget(history_label)
         card_layout.addWidget(self.history_scroll, 1)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(18, 18, 18, 18)
+        root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.addWidget(self.card)
 
         self.background_opacity = 82
         self.text_opacity = 100
+        self.history_text_opacity = 100
         self.mask_opacity = 45
         self.apply_visual_style()
+        self.install_overlay_resize_filter()
 
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "history_scroll"):
+            # Preserve the current translation area at compact heights.  The
+            # history area is supplemental and may disappear completely.
+            self.history_scroll.setVisible(self.height() > 240)
+        if hasattr(self, "status_widget"):
+            # The header is useful at normal size but can be removed entirely
+            # when the overlay is compressed down to the live translation.
+            show_header = self.height() > 380
+            self.title_bar.setVisible(show_header)
+            self.status_widget.setVisible(show_header)
+            self.source_label.setVisible(show_header)
+            self.level_bar.setVisible(show_header)
+            self.card_layout.setStretch(4, 1 if not show_header else 0)
+            self.card_layout.setStretch(5, 1)
+        scale = min(self.width() / 560.0, self.height() / 430.0)
+        scale = max(0.6, min(1.5, scale))
+        self._font_scale = scale
+        if not hasattr(self, "current_original"):
+            return
+        self._apply_current_dimensions(scale)
+        self.apply_visual_style()
+        for edit in (self.current_original, self.current_translation):
+            if self._current_follow_bottom[self._current_edit_key(edit)]:
+                QTimer.singleShot(
+                    0,
+                    lambda edit=edit: self._start_current_scroll_timer(
+                        edit, self._current_update_revision
+                    ),
+                )
+
+    def set_show_original(self, enabled: bool) -> None:
+        self._show_current_original = bool(enabled)
+        self.current_original.setVisible(self._show_current_original)
+        self._apply_current_dimensions(self._font_scale)
+
+    def set_font_scale(self, percentage: int) -> None:
+        self._font_scale_multiplier = max(0.5, min(4.0, int(percentage) / 100))
+        self.apply_visual_style()
+
+    def _apply_current_dimensions(self, scale: float) -> None:
+        original_height = max(28, round(48 * scale))
+        translation_height = max(36, round(62 * scale))
+        if self.height() > 380:
+            if self._show_current_original:
+                self.current_original.setFixedHeight(original_height)
+                self.current_translation.setFixedHeight(translation_height)
+            else:
+                self.current_translation.setFixedHeight(
+                    original_height + translation_height + 2
+                )
+        else:
+            for edit in (self.current_original, self.current_translation):
+                edit.setMaximumHeight(16777215)
+            compact_original = max(24, round(34 * scale))
+            compact_translation = max(30, round(44 * scale))
+            if self._show_current_original:
+                self.current_original.setMinimumHeight(compact_original)
+                self.current_translation.setMinimumHeight(compact_translation)
+            else:
+                self.current_translation.setMinimumHeight(
+                    compact_original + compact_translation + 2
+                )
 
     @staticmethod
     def _make_text_edit(placeholder: str, object_name: str) -> QPlainTextEdit:
@@ -185,9 +288,12 @@ class AudioTranslationWindow(QDialog):
         return edit
 
     def set_history_limit(self, value: int) -> None:
+        snapshot = self._capture_history_scroll()
         self._history_limit = max(1, min(10, int(value)))
         while len(self._history_cards) > self._history_limit:
             self._remove_oldest_card()
+        self._sync_history_content_size()
+        self._schedule_history_scroll_restore(snapshot, inserted_at_top=False)
 
     def set_state(self, state: str) -> None:
         self.state_label.setText(state)
@@ -199,17 +305,148 @@ class AudioTranslationWindow(QDialog):
         self.level_bar.setValue(max(0, min(100, int(value))))
 
     def set_speech_state(self, active: bool) -> None:
-        self.speech_label.setText("语音状态：检测到声音" if active else "语音状态：静音")
+        self.speech_label.setText(
+            "语音状态：检测到声音" if active else "语音状态：静音"
+        )
 
     def update_partial(self, original: str, translated: str) -> None:
-        self.current_original.setPlainText(original)
-        self.current_translation.setPlainText(translated)
+        if self._current_hold_active:
+            self._pending_partial = (original, translated)
+            return
+        self._update_current_text(original, translated)
+
+    def _update_current_text(self, original: str, translated: str) -> None:
+        self._current_update_revision += 1
+        revision = self._current_update_revision
+        self._update_current_edit(self.current_original, original, revision)
+        self._update_current_edit(self.current_translation, translated, revision)
+
+    def _update_current_edit(
+        self, edit: QPlainTextEdit, text: str, revision: int
+    ) -> None:
+        scrollbar = edit.verticalScrollBar()
+        old_value = scrollbar.value()
+        old_maximum = scrollbar.maximum()
+        edit_key = self._current_edit_key(edit)
+        follow_bottom = (
+            self._current_follow_bottom[edit_key]
+            or not edit.toPlainText()
+            or old_maximum <= 0
+            or old_value >= old_maximum - 2
+        )
+        self._current_follow_bottom[edit_key] = follow_bottom
+        edit.setPlainText(text)
+        QTimer.singleShot(
+            0,
+            lambda: self._start_current_scroll(
+                edit, old_value, follow_bottom, revision
+            ),
+        )
+
+    def _start_current_scroll(
+        self,
+        edit: QPlainTextEdit,
+        old_value: int,
+        follow_bottom: bool,
+        revision: int,
+    ) -> None:
+        if revision != self._current_update_revision:
+            return
+        if follow_bottom:
+            self._current_follow_bottom[self._current_edit_key(edit)] = True
+            scrollbar = edit.verticalScrollBar()
+            scrollbar.setValue(min(old_value, scrollbar.maximum()))
+            self._start_current_scroll_timer(edit, revision)
+        else:
+            self._cancel_current_scroll_animation(edit)
+            edit.verticalScrollBar().setValue(
+                min(old_value, edit.verticalScrollBar().maximum())
+            )
+
+    def _current_edit_key(self, edit: QPlainTextEdit) -> str:
+        return "original" if edit is self.current_original else "translation"
+
+    def _start_current_scroll_timer(
+        self, edit: QPlainTextEdit, revision: int
+    ) -> None:
+        key = self._current_edit_key(edit)
+        timer = self._current_scroll_timers.get(key)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(20)
+            timer.timeout.connect(
+                lambda edit=edit, key=key: self._advance_current_scroll(
+                    edit, key
+                )
+            )
+            self._current_scroll_timers[key] = timer
+        timer.setProperty("scrollRevision", revision)
+        timer.setProperty("idleFrames", 0)
+        if not timer.isActive():
+            timer.start()
+
+    def _advance_current_scroll(self, edit: QPlainTextEdit, key: str) -> None:
+        timer = self._current_scroll_timers.get(key)
+        if timer is None:
+            return
+        if not self._current_follow_bottom[key]:
+            timer.stop()
+            return
+
+        scrollbar = edit.verticalScrollBar()
+        target = scrollbar.maximum()
+        current = scrollbar.value()
+        if current >= target:
+            # Keep checking briefly while QPlainTextEdit is still laying out
+            # newly wrapped lines; the target can increase after this frame.
+            idle_frames = int(timer.property("idleFrames") or 0) + 1
+            timer.setProperty("idleFrames", idle_frames)
+            if idle_frames >= 30:
+                timer.stop()
+            return
+
+        # Move by a small, fixed number of pixels per frame.  This avoids the
+        # scrollbar jump caused by changing its target while the document is
+        # being laid out, while still following rapidly arriving partial text.
+        timer.setProperty("idleFrames", 0)
+        scrollbar.setValue(min(target, current + 2))
+
+    def _cancel_current_scroll_animation(self, edit: QPlainTextEdit) -> None:
+        key = self._current_edit_key(edit)
+        self._current_follow_bottom[key] = False
+        timer = self._current_scroll_timers.get(key)
+        if timer is not None:
+            timer.stop()
 
     def append_result(self, original: str, translated: str) -> None:
         if not original and not translated:
             return
-        self.current_original.setPlainText(original)
-        self.current_translation.setPlainText(translated)
+        self._append_history_card(original, translated)
+        if self._current_hold_active:
+            self._pending_partial = None
+            self._pending_completed.append((original, translated))
+            return
+        self._update_current_text(original, translated)
+        self._start_current_hold()
+
+    def _start_current_hold(self) -> None:
+        self._current_hold_active = True
+        self._current_hold_timer.start(self._current_hold_ms)
+
+    def _release_current_hold(self) -> None:
+        self._current_hold_active = False
+        if self._pending_completed:
+            original, translated = self._pending_completed.pop(0)
+            self._update_current_text(original, translated)
+            self._start_current_hold()
+            return
+        if self._pending_partial is not None:
+            original, translated = self._pending_partial
+            self._pending_partial = None
+            self._update_current_text(original, translated)
+
+    def _append_history_card(self, original: str, translated: str) -> None:
+        history_snapshot = self._capture_history_scroll()
         while len(self._history_cards) >= self._history_limit:
             self._remove_oldest_card()
 
@@ -221,43 +458,103 @@ class AudioTranslationWindow(QDialog):
         original_label = QLabel(original or "（无原文）")
         original_label.setObjectName("audioHistoryOriginal")
         original_label.setWordWrap(True)
-        original_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        original_label.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
         translation_label = QLabel(translated or "（无译文）")
         translation_label.setObjectName("audioHistoryTranslation")
         translation_label.setWordWrap(True)
-        translation_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        card_layout.addWidget(original_label)
+        translation_label.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        )
         card_layout.addWidget(translation_label)
-        self.history_layout.insertWidget(len(self._history_cards), card)
-        self._history_cards.append(card)
-        QTimer.singleShot(0, self._scroll_history_to_bottom)
+        card_layout.addWidget(original_label)
+        self.history_layout.insertWidget(0, card)
+        self._history_cards.insert(0, card)
+        self._sync_history_content_size()
+        self._schedule_history_scroll_restore(
+            history_snapshot, inserted_at_top=True
+        )
 
     def _remove_oldest_card(self) -> None:
         if not self._history_cards:
             return
-        card = self._history_cards.pop(0)
+        card = self._history_cards.pop()
         self.history_layout.removeWidget(card)
         card.deleteLater()
+        self._sync_history_content_size()
 
-    def _scroll_history_to_bottom(self) -> None:
-        self.history_scroll.verticalScrollBar().setValue(
-            self.history_scroll.verticalScrollBar().maximum()
+    def _sync_history_content_size(self) -> None:
+        self.history_layout.activate()
+        self.history_content.setMinimumHeight(
+            max(0, self.history_layout.sizeHint().height())
         )
 
+    def _capture_history_scroll(self) -> tuple[int, int, int]:
+        scrollbar = self.history_scroll.verticalScrollBar()
+        return (
+            scrollbar.value(),
+            scrollbar.maximum(),
+            self.history_content.sizeHint().height(),
+        )
+
+    def _schedule_history_scroll_restore(
+        self,
+        snapshot: tuple[int, int, int],
+        inserted_at_top: bool,
+    ) -> None:
+        self._history_scroll_revision += 1
+        revision = self._history_scroll_revision
+
+        def restore() -> None:
+            if revision != self._history_scroll_revision:
+                return
+            scrollbar = self.history_scroll.verticalScrollBar()
+            old_value, old_maximum, old_height = snapshot
+            if old_maximum <= 0 or old_value <= 2:
+                target = 0
+            elif old_value >= old_maximum - 2:
+                target = scrollbar.maximum()
+            elif inserted_at_top:
+                delta = max(
+                    0, self.history_content.sizeHint().height() - old_height
+                )
+                target = old_value + delta
+            else:
+                target = old_value
+            scrollbar.setValue(min(max(target, 0), scrollbar.maximum()))
+
+        QTimer.singleShot(0, restore)
+
     def clear(self) -> None:
+        self._current_hold_timer.stop()
+        self._current_hold_active = False
+        self._pending_partial = None
+        self._pending_completed.clear()
+        self._current_update_revision += 1
+        self._history_scroll_revision += 1
+        self._current_follow_bottom["original"] = False
+        self._current_follow_bottom["translation"] = False
+        for timer in self._current_scroll_timers.values():
+            timer.stop()
         self.current_original.clear()
         self.current_translation.clear()
         while self._history_cards:
             self._remove_oldest_card()
+        self._sync_history_content_size()
+        self.history_scroll.verticalScrollBar().setValue(0)
         self.set_level(0)
         self.set_speech_state(False)
-
     def set_background_opacity(self, percentage: int) -> None:
         self.background_opacity = max(0, min(100, int(percentage)))
         self.apply_visual_style()
 
     def set_text_opacity(self, percentage: int) -> None:
         self.text_opacity = max(30, min(100, int(percentage)))
+        self.apply_visual_style()
+
+    def set_history_text_opacity(self, percentage: int) -> None:
+        self.history_text_opacity = max(30, min(100, int(percentage)))
         self.apply_visual_style()
 
     def set_mask_opacity(self, percentage: int) -> None:
@@ -268,31 +565,44 @@ class AudioTranslationWindow(QDialog):
         bg = round(255 * self.background_opacity / 100)
         history_bg = round(165 * self.background_opacity / 100)
         text = round(255 * self.text_opacity / 100)
+        history_text = round(255 * self.history_text_opacity / 100)
         mask = round(255 * self.mask_opacity / 100)
         chrome = round(255 * self.background_opacity / 100)
         border = round(150 * self.background_opacity / 100)
+        text_scale = self._font_scale * self._font_scale_multiplier
+        title_size = max(9, round(12 * self._font_scale))
+        lock_size = max(8, round(10 * self._font_scale))
+        chrome_size = max(9, round(13 * self._font_scale))
+        original_size = max(10, round(13 * text_scale))
+        translation_size = max(12, round(16 * text_scale))
+        history_size = max(9, round(12 * text_scale))
+        progress_bg = round(35 * self.background_opacity / 100)
+        progress_chunk = round(190 * self.background_opacity / 100)
+        scrollbar_bg = round(25 * self.background_opacity / 100)
+        scrollbar_handle = round(150 * self.background_opacity / 100)
         self.setWindowOpacity(1.0)
         self.card_shadow.setColor(QColor(0, 0, 0, round(150 * self.background_opacity / 100)))
         self.setStyleSheet(
-            f"QWidget#audioCard {{ background: rgba(20,25,38,{bg}); "
-            f"border: 1px solid rgba(120,180,255,{border}); border-radius: 16px; }}"
-            "QWidget#audioTitleBar { background: transparent; }"
-            f"QLabel#audioTitle {{ color: rgba(219,234,254,{chrome}); font-size: 12px; font-weight: 600; }}"
-            f"QLabel#audioLockState {{ color: rgba(125,211,252,{chrome}); font-size: 10px; font-weight: 700; }}"
-            f"QLabel#audioState, QLabel#audioSource, QLabel#audioSpeech {{ color: rgba(219,234,254,{text}); }}"
-            f"QLabel#audioSectionTitle, QLabel#audioCurrentCaption {{ color: rgba(125,211,252,{text}); font-weight: 600; }}"
-            f"QFrame#audioCurrentMask {{ background: rgba(15,23,42,{mask}); border-radius: 10px; }}"
-            f"QPlainTextEdit#audioCurrentOriginal {{ color: rgba(248,250,252,{text}); font-size: 13px; background: transparent; border: none; padding: 1px; }}"
-            f"QPlainTextEdit#audioCurrentTranslation {{ color: rgba(248,250,252,{text}); font-size: 16px; font-weight: 600; background: transparent; border: none; padding: 1px; }}"
-            f"QFrame#audioHistoryCard {{ background: rgba(15,23,42,{history_bg}); border-radius: 8px; }}"
-            f"QLabel#audioHistoryOriginal {{ color: rgba(226,232,240,{text}); }}"
-            f"QLabel#audioHistoryTranslation {{ color: rgba(191,219,254,{text}); }}"
-            "QProgressBar { background: rgba(255,255,255,35); border: none; border-radius: 3px; }"
-            "QProgressBar::chunk { background: rgba(96,165,250,190); border-radius: 3px; }"
+            f"QWidget#audioCard {{ background: rgba(10,17,22,{bg}); "
+            f"border: 1px solid rgba(107,216,255,{border}); border-radius: 8px; }}"
+            "QWidget#audioTitleBar { background: transparent; "
+            "border-bottom: 1px solid rgba(93,112,122,120); }"
+            f"QLabel#audioTitle {{ color: rgba(231,238,241,{chrome}); font-size: {title_size}px; font-weight: 600; }}"
+            f"QLabel#audioLockState {{ color: rgba(195,241,255,{chrome}); font-size: {lock_size}px; font-weight: 600; }}"
+            f"QLabel#audioState, QLabel#audioSource, QLabel#audioSpeech {{ color: rgba(231,238,241,{chrome}); font-size: {chrome_size}px; }}"
+            f"QFrame#audioCurrentMask {{ background: rgba(17,27,33,{mask}); border: 1px solid rgba(44,60,69,130); border-radius: 6px; }}"
+            f"QPlainTextEdit#audioCurrentOriginal {{ color: rgba(231,238,241,{text}); font-size: {original_size}px; background: transparent; border: none; padding: 1px; }}"
+            f"QPlainTextEdit#audioCurrentTranslation {{ color: rgba(231,238,241,{text}); font-size: {translation_size}px; font-weight: 600; background: transparent; border: none; padding: 1px; }}"
+            f"QFrame#audioHistoryCard {{ background: rgba(13,20,25,{history_bg}); border: 1px solid rgba(44,60,69,130); border-radius: 6px; }}"
+            f"QLabel#audioHistoryOriginal {{ color: rgba(225,234,237,{history_text}); font-size: {history_size}px; }}"
+            f"QLabel#audioHistoryTranslation {{ color: rgba(195,241,255,{history_text}); font-size: {history_size}px; }}"
+            f"QProgressBar {{ background: rgba(93,112,122,{progress_bg}); border: none; border-radius: 2px; }}"
+            f"QProgressBar::chunk {{ background: rgba(107,216,255,{progress_chunk}); border-radius: 2px; }}"
             "QScrollArea, QScrollArea > QWidget { background: transparent; border: none; }"
             "QScrollArea > QWidget#qt_scrollarea_viewport { background: transparent; }"
-            "QScrollBar:vertical { background: rgba(255,255,255,25); width: 6px; }"
-            "QScrollBar::handle:vertical { background: rgba(150,200,255,150); border-radius: 3px; min-height: 24px; }"
+            f"QScrollBar:vertical {{ background: transparent; border: none; width: 7px; }}"
+            f"QScrollBar::handle:vertical {{ background: rgba(93,112,122,{scrollbar_handle}); border-radius: 3px; min-height: 24px; }}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
         )
 
@@ -339,19 +649,6 @@ class AudioTranslationWindow(QDialog):
             pass
 
     def eventFilter(self, watched, event) -> bool:
-        if not self.is_window_widget(watched) or self.locked:
-            return super().eventFilter(watched, event)
-        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            self.drag_start = event.globalPosition().toPoint()
-            self.drag_origin = self.frameGeometry().topLeft()
-            return True
-        if event.type() == QEvent.Type.MouseMove and self.drag_start is not None and self.drag_origin is not None:
-            self.move(self.drag_origin + event.globalPosition().toPoint() - self.drag_start)
-            return True
-        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            self.drag_start = None
-            self.drag_origin = None
-            return True
         return super().eventFilter(watched, event)
 
     def is_window_widget(self, watched) -> bool:
@@ -370,11 +667,17 @@ class AudioTranslationWindow(QDialog):
     def restore_geometry(self, settings: AppSettings) -> None:
         if settings.audio_window_x >= 0 and settings.audio_window_y >= 0:
             self.move(settings.audio_window_x, settings.audio_window_y)
+        self.resize(
+            max(self.minimumWidth(), settings.audio_window_width),
+            max(self.minimumHeight(), settings.audio_window_height),
+        )
 
     def save_geometry(self, settings: AppSettings) -> None:
         geometry = self.geometry()
         settings.audio_window_x = geometry.x()
         settings.audio_window_y = geometry.y()
+        settings.audio_window_width = geometry.width()
+        settings.audio_window_height = geometry.height()
 
     def nativeEvent(self, event_type, message):
         if event_type == b"windows_generic_MSG":
@@ -387,8 +690,6 @@ class AudioTranslationWindow(QDialog):
         return super().nativeEvent(event_type, message)
 
     def closeEvent(self, event) -> None:
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
+        self.remove_overlay_resize_filter()
         self.stop_requested.emit()
         super().closeEvent(event)

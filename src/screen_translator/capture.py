@@ -51,10 +51,10 @@ class CaptureOverlay(QDialog):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 90))
         if self.start_point is None or self.end_point is None:
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(20, 35, self.instruction)
+            self.draw_instruction(painter, self.instruction)
             return
         selection = QRect(self.start_point, self.end_point).normalized()
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
@@ -62,6 +62,26 @@ class CaptureOverlay(QDialog):
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         painter.setPen(QPen(QColor(0, 190, 255), 2))
         painter.drawRect(selection)
+        self.draw_selection_size(painter, selection)
+
+    @staticmethod
+    def draw_instruction(painter: QPainter, instruction: str) -> None:
+        panel = QRect(20, 18, min(520, painter.device().width() - 40), 40)
+        painter.setPen(QPen(QColor(117, 227, 245, 180), 1))
+        painter.setBrush(QColor(8, 16, 24, 220))
+        painter.drawRoundedRect(panel, 10, 10)
+        painter.setPen(QColor(237, 246, 255))
+        painter.drawText(panel.adjusted(14, 0, -14, 0), Qt.AlignmentFlag.AlignVCenter, instruction)
+
+    @staticmethod
+    def draw_selection_size(painter: QPainter, selection: QRect) -> None:
+        label = f"{selection.width()} × {selection.height()}"
+        label_rect = QRect(selection.left(), max(18, selection.top() - 28), 110, 22)
+        painter.setPen(QPen(QColor(117, 227, 245, 180), 1))
+        painter.setBrush(QColor(8, 16, 24, 220))
+        painter.drawRoundedRect(label_rect, 6, 6)
+        painter.setPen(QColor(237, 246, 255))
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -129,8 +149,10 @@ class MultiRegionOverlay(QDialog):
         self.start_point: QPoint | None = None
         self.origin_rect: QRect | None = None
         self.preview_rect: QRect | None = None
-        # 四角方块用于斜向缩放，四边中点圆形控制点用于整体移动。
+        # 四角用于双轴缩放，四边中点用于单轴缩放，框内用于整体移动。
         self.handle_size = 8
+        self.handle_hit_size = 14
+        self.move_hit_margin = 14
         self.minimum_region_size = 20
 
     def showEvent(self, event) -> None:
@@ -146,6 +168,7 @@ class MultiRegionOverlay(QDialog):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 145))
 
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
@@ -155,11 +178,20 @@ class MultiRegionOverlay(QDialog):
             painter.fillRect(self.preview_rect, Qt.GlobalColor.transparent)
 
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        painter.setPen(QColor(255, 255, 255))
+        instruction = (
+            "空白处拖动新增  ·  边中方块横/纵缩放  ·  四角斜向缩放  ·  "
+            "框内整体拖动  ·  "
+            "Space 启用/停用  ·  Delete 删除  ·  Enter 完成  ·  Esc 取消"
+        )
+        panel = QRect(20, 18, min(860, self.width() - 40), 40)
+        painter.setPen(QPen(QColor(117, 227, 245, 180), 1))
+        painter.setBrush(QColor(8, 16, 24, 220))
+        painter.drawRoundedRect(panel, 10, 10)
+        painter.setPen(QColor(237, 246, 255))
         painter.drawText(
-            20,
-            34,
-            "空白处拖动新增；拖动边中圆点移动；拖动四角方块缩放；Space 启用/停用；Delete 删除；Enter 完成；Esc 取消",
+            panel.adjusted(14, 0, -14, 0),
+            Qt.AlignmentFlag.AlignVCenter,
+            instruction,
         )
 
         colors = [
@@ -175,8 +207,8 @@ class MultiRegionOverlay(QDialog):
             if index == self.active_index:
                 color = QColor(255, 255, 255)
             painter.setPen(QPen(color, 2))
-            # 上一个区域的圆点使用了黄色填充；画新区域边框前必须关闭填充，
-            # 否则第二个及后续区域会被黄色画刷整块填满。
+            # 画新区域边框前必须关闭填充，否则第二个及后续区域会被
+            # 控制点画刷整块填满。
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(region)
             painter.fillRect(
@@ -194,19 +226,21 @@ class MultiRegionOverlay(QDialog):
             for handle in self.corner_handle_rects(region).values():
                 painter.drawRect(handle)
             painter.setBrush(QColor(255, 205, 70, 240))
-            for handle in self.move_handle_rects(region):
-                painter.drawEllipse(handle)
+            for handle in self.edge_handle_rects(region).values():
+                painter.drawRect(handle)
 
         if self.preview_rect is not None:
             painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.DashLine))
-            # 预览框只画虚线边框，不能继承前一个移动圆点的黄色填充。
+            # 预览框只画虚线边框，不能继承前一个控制点的黄色填充。
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.preview_rect)
 
-    def corner_handle_rects(self, region: QRect) -> dict[str, QRect]:
+    def corner_handle_rects(
+        self, region: QRect, *, hit_test: bool = False
+    ) -> dict[str, QRect]:
         """返回位于区域四角、用于斜向缩放的方形控制点。"""
-        half = self.handle_size // 2
-        size = self.handle_size
+        size = self.handle_hit_size if hit_test else self.handle_size
+        half = size // 2
         return {
             "left|top": QRect(region.left() - half, region.top() - half, size, size),
             "right|top": QRect(region.right() - half, region.top() - half, size, size),
@@ -214,44 +248,49 @@ class MultiRegionOverlay(QDialog):
             "right|bottom": QRect(region.right() - half, region.bottom() - half, size, size),
         }
 
-    def move_handle_rects(self, region: QRect) -> list[QRect]:
-        """返回位于四边中点、用于整体移动的圆形控制点。"""
-        size = self.handle_size
+    def edge_handle_rects(
+        self, region: QRect, *, hit_test: bool = False
+    ) -> dict[str, QRect]:
+        """返回四边中点的方形单轴缩放控制点。"""
+        size = self.handle_hit_size if hit_test else self.handle_size
         half = size // 2
-        centers = [
-            QPoint(region.center().x(), region.top()),
-            QPoint(region.right(), region.center().y()),
-            QPoint(region.center().x(), region.bottom()),
-            QPoint(region.left(), region.center().y()),
-        ]
-        return [
-            QRect(point.x() - half, point.y() - half, size, size)
-            for point in centers
-        ]
+        centers = {
+            "top": QPoint(region.center().x(), region.top()),
+            "right": QPoint(region.right(), region.center().y()),
+            "bottom": QPoint(region.center().x(), region.bottom()),
+            "left": QPoint(region.left(), region.center().y()),
+        }
+        return {
+            edge: QRect(point.x() - half, point.y() - half, size, size)
+            for edge, point in centers.items()
+        }
+
+    def move_hit_rect(self, region: QRect) -> QRect:
+        """Expand the move hit area without changing the visible region."""
+        margin = self.move_hit_margin
+        return region.adjusted(-margin, -margin, margin, margin)
 
     def control_at(self, region: QRect, position: QPoint) -> tuple[str, set[str]]:
         # 小区域的控制点可能重叠，此时角点缩放优先。
-        for edge_text, handle in self.corner_handle_rects(region).items():
+        for edge_text, handle in self.corner_handle_rects(
+            region, hit_test=True
+        ).items():
             if handle.contains(position):
                 return "resize", set(edge_text.split("|"))
-        for handle in self.move_handle_rects(region):
+        for edge, handle in self.edge_handle_rects(region, hit_test=True).items():
             if handle.contains(position):
-                return "move", set()
+                return "resize", {edge}
+        if self.move_hit_rect(region).contains(position):
+            return "move", set()
         return "", set()
 
     def hit_test(self, position: QPoint) -> tuple[int, str, set[str]]:
         # 重叠区域只允许最上层的一个区域响应。
         for index in range(len(self.regions) - 1, -1, -1):
             region = self.regions[index]
-            if region.contains(position):
-                action, edges = self.control_at(region, position)
-                return index, action or "select", edges
-
-        # 控制点以边框为中心，因此一半可能位于区域外部。
-        for index in range(len(self.regions) - 1, -1, -1):
-            action, edges = self.control_at(self.regions[index], position)
+            action, edges = self.control_at(region, position)
             if action:
-                return index, action, edges
+                return index, action or "select", edges
         return -1, "", set()
 
     def update_hover(self, position: QPoint) -> None:
@@ -259,8 +298,12 @@ class MultiRegionOverlay(QDialog):
         if self.hover_action == "resize":
             if self.hover_edges in ({"left", "top"}, {"right", "bottom"}):
                 cursor = Qt.CursorShape.SizeFDiagCursor
-            else:
+            elif self.hover_edges in ({"right", "top"}, {"left", "bottom"}):
                 cursor = Qt.CursorShape.SizeBDiagCursor
+            elif self.hover_edges in ({"left"}, {"right"}):
+                cursor = Qt.CursorShape.SizeHorCursor
+            else:
+                cursor = Qt.CursorShape.SizeVerCursor
         elif self.hover_action == "move":
             cursor = Qt.CursorShape.SizeAllCursor
         elif self.hover_action == "select":
@@ -288,7 +331,6 @@ class MultiRegionOverlay(QDialog):
                 self.origin_rect = QRect(self.regions[index])
                 self.resize_edges = edges
             else:
-                # 区域内部只负责选中，不再触发移动。
                 self.action = ""
                 self.start_point = None
                 self.origin_rect = None

@@ -118,17 +118,18 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
     HOTKEY_ID = 0x53435254
     MOD_NOREPEAT = 0x4000
 
-    def __init__(self, hwnd: int, hotkey: str, callback):
+    def __init__(self, hwnd: int, hotkey: str, callback, hotkey_id: int = HOTKEY_ID):
         super().__init__()
         self._hwnd = int(hwnd)
         self._callback = callback
         self._hotkey = hotkey
+        self._hotkey_id = int(hotkey_id)
         modifiers, virtual_key = hotkey_to_win32(hotkey)
         self._user32 = ctypes.windll.user32
         self._registered = bool(
             self._user32.RegisterHotKey(
                 self._hwnd,
-                self.HOTKEY_ID,
+                self._hotkey_id,
                 modifiers | self.MOD_NOREPEAT,
                 virtual_key,
             )
@@ -143,12 +144,12 @@ class GlobalHotkeyFilter(QAbstractNativeEventFilter):
             msg = wintypes.MSG.from_address(int(message))
         except (TypeError, ValueError):
             return False, 0
-        if msg.message == self.WM_HOTKEY and msg.wParam == self.HOTKEY_ID:
+        if msg.message == self.WM_HOTKEY and msg.wParam == self._hotkey_id:
             self._callback()
             return True, 0
         return False, 0
 
     def unregister(self) -> None:
         if self._registered:
-            self._user32.UnregisterHotKey(self._hwnd, self.HOTKEY_ID)
+            self._user32.UnregisterHotKey(self._hwnd, self._hotkey_id)
             self._registered = False

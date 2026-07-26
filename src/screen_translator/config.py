@@ -13,18 +13,30 @@ APP_NAME = "ScreenTranslator"
 
 @dataclass
 class AppSettings:
+    # Screenshot/continuous-monitor translation settings.  These are kept
+    # separate from the audio DashScope credentials below on purpose.
+    translation_provider: str = "mymemory"
     translation_url: str = "https://api.mymemory.translated.net/get"
     translation_api_key: str = ""
+    translation_qwen_api_key: str = ""
+    translation_qwen_model: str = "qwen-mt-flash"
     tesseract_path: str = ""
     source_language: str = "en"
     target_language: str = "zh-CN"
     hotkey: str = "Ctrl+Shift+T"
+    hotkey_enabled: bool = True
+    monitor_hotkey: str = "Ctrl+Shift+M"
+    monitor_hotkey_enabled: bool = False
+    audio_hotkey: str = "Ctrl+Shift+A"
+    audio_hotkey_enabled: bool = False
     overlay_x: int = -1
     overlay_y: int = -1
     overlay_opacity: int = 82
     overlay_text_opacity: int = 100
     overlay_font_size: int = 14
     overlay_mask_opacity: int = 45
+    overlay_width: int = 520
+    overlay_height: int = 220
     dashscope_api_key: str = ""
     audio_source_mode: str = "global"
     audio_device_id: int = -1
@@ -41,9 +53,14 @@ class AppSettings:
     audio_history_limit: int = 10
     audio_background_opacity: int = 82
     audio_text_opacity: int = 100
+    audio_history_text_opacity: int = 100
+    audio_show_original: bool = True
+    audio_font_scale: int = 100
     audio_mask_opacity: int = 45
     audio_window_x: int = -1
     audio_window_y: int = -1
+    audio_window_width: int = 560
+    audio_window_height: int = 430
 
 
 def settings_path() -> Path:
@@ -59,8 +76,36 @@ def load_settings() -> AppSettings:
         return AppSettings()
     try:
         values = json.loads(path.read_text(encoding="utf-8"))
-        allowed = asdict(AppSettings())
-        settings = AppSettings(**{key: values[key] for key in allowed if key in values})
+        if not isinstance(values, dict):
+            return AppSettings()
+
+        defaults = AppSettings()
+        allowed = asdict(defaults)
+        valid_values = {}
+        for key, default in allowed.items():
+            if key not in values:
+                continue
+            value = values[key]
+            # AppSettings intentionally contains only primitive fields.  Do
+            # not let malformed JSON values reach Qt widgets or arithmetic
+            # used by the workers during application startup.
+            if isinstance(default, bool):
+                is_valid = isinstance(value, bool)
+            else:
+                is_valid = isinstance(value, type(default))
+            if is_valid:
+                valid_values[key] = value
+        settings = AppSettings(**valid_values)
+        # Older settings files had no provider field. Preserve a custom URL
+        # instead of silently treating it as MyMemory after upgrading.
+        if "translation_provider" not in values:
+            settings.translation_provider = (
+                "mymemory"
+                if "mymemory.translated.net" in settings.translation_url
+                else "custom"
+            )
+        if settings.translation_provider not in {"mymemory", "qwen_mt", "custom"}:
+            settings.translation_provider = "mymemory"
         if settings.translation_url == "https://libretranslate.com/translate":
             settings.translation_url = AppSettings().translation_url
             settings.target_language = AppSettings().target_language
@@ -70,6 +115,9 @@ def load_settings() -> AppSettings:
 
 
 def save_settings(settings: AppSettings) -> None:
-    settings_path().write_text(
+    path = settings_path()
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(
         json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    temporary_path.replace(path)

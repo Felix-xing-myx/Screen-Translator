@@ -142,16 +142,22 @@ class AudioTranslationWorker(QThread):
                 except (AudioCaptureError, RuntimeError, ValueError) as exc:
                     if self._stop_requested:
                         break
-                    self.failed.emit(str(exc))
-                    self._emit_state("Audio monitor error; retrying in 1 second...")
+                    message = str(exc)
+                    self.failed.emit(message)
+                    self._emit_state(
+                        f"Audio monitor error: {self._monitor_error_summary(message)}; retrying..."
+                    )
                     self._reset_client()
                     self._send_buffer.clear()
                     self._sleep_retry()
                 except Exception as exc:  # noqa: BLE001
                     if self._stop_requested:
                         break
-                    self.failed.emit(str(exc))
-                    self._emit_state("Audio monitor error; retrying in 1 second...")
+                    message = str(exc)
+                    self.failed.emit(message)
+                    self._emit_state(
+                        f"Audio monitor error: {self._monitor_error_summary(message)}; retrying..."
+                    )
                     self._reset_client()
                     self._send_buffer.clear()
                     self._sleep_retry()
@@ -159,6 +165,16 @@ class AudioTranslationWorker(QThread):
             self.level_changed.emit(0)
             self.speech_changed.emit(False)
             self._emit_state("Stopped", force=True)
+
+    @staticmethod
+    def _monitor_error_summary(message: str) -> str:
+        """Keep the main-window status useful without making it excessively long."""
+        message = " ".join(str(message).split())
+        if "0x80070002" in message:
+            return "process audio loopback unavailable (0x80070002)"
+        if len(message) > 96:
+            return message[:93] + "..."
+        return message or "unknown error"
 
     def _run_session(self) -> None:
         source = None

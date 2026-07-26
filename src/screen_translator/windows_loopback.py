@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import sys
 import uuid
+from ctypes import wintypes
 
 if sys.platform != "win32":
     raise ImportError("Windows Application Loopback is only available on Windows")
@@ -74,17 +75,24 @@ def guid(text: str) -> GUID:
 
 
 IID_IAUDIO_CLIENT = guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2")
-IID_IAUDIO_CAPTURE_CLIENT = guid("C8ADBD64-E71E-48a0-A4DE-185C395CEBF3")
+IID_IAUDIO_CAPTURE_CLIENT = guid("C8ADBD64-E71E-48a0-A4DE-185C395CD317")
+IID_IUNKNOWN = guid("00000000-0000-0000-C000-000000000046")
+IID_IACTIVATE_COMPLETION_HANDLER = guid("41D949AB-9862-444A-80F6-C261334DA5EB")
 S_OK = 0
 E_FAIL = -2147467259
+E_NOINTERFACE = -2147467262
+HRESULT_FILE_NOT_FOUND = -2147024894
 WAIT_TIMEOUT = 258
+WAIT_FAILED = 0xFFFFFFFF
 VT_BLOB = 65
 WAVE_FORMAT_PCM = 1
 SHAREMODE_SHARED = 0
 STREAMFLAGS_LOOPBACK = 0x00020000
 STREAMFLAGS_EVENTCALLBACK = 0x00040000
 STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
-VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK = "VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK"
+# The SDK macro resolves to this virtual device path. Passing the macro name
+# as a literal string makes ActivateAudioInterfaceAsync return 0x80070002.
+VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK = r"VAD\Process_Loopback"
 
 QI = WINFUNCTYPE(HRESULT, ctypes.c_void_p, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
 ADDREF = WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
@@ -106,9 +114,11 @@ class COM_OBJECT(ctypes.Structure):
 
 
 def method(pointer, index: int, result, *args):
-    address = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_void_p))[0]
-    vtable = ctypes.cast(address, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
-    return WINFUNCTYPE(result, ctypes.c_void_p, *args)(vtable[index])(pointer, *args)
+    vtable = ctypes.cast(
+        pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+    )[0]
+    function = WINFUNCTYPE(result, ctypes.c_void_p, *args)(vtable[index])
+    return lambda *values: function(pointer, *values)
 
 
 class ApplicationLoopbackSource:
@@ -121,24 +131,54 @@ class ApplicationLoopbackSource:
         self.sample_rate = 48_000
         self.channels = 2
         self._closed = False
-        self._setup()
+        self._interrupted = False
+        self._resources_closed = False
+        try:
+            self._setup()
+        except Exception:
+            self.close()
+            raise
 
 
     def _setup(self) -> None:
-        import threading
-
         self._ole32 = ctypes.WinDLL("ole32.dll")
         self._kernel32 = ctypes.WinDLL("kernel32.dll")
         self._ole32.CoInitializeEx(None, 0)
         self._com_initialized = True
+        self._kernel32.CreateEventW.argtypes = [
+            ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, ctypes.c_wchar_p
+        ]
+        self._kernel32.CreateEventW.restype = ctypes.c_void_p
+        self._kernel32.SetEvent.argtypes = [ctypes.c_void_p]
+        self._kernel32.SetEvent.restype = wintypes.BOOL
+        self._kernel32.WaitForSingleObject.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD
+        ]
+        self._kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        self._kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self._kernel32.CloseHandle.restype = wintypes.BOOL
         self._activation_event = self._kernel32.CreateEventW(None, True, False, None)
         self._activation_error = E_FAIL
+        self._activation_exception = ""
+        self._activation_interface_value = 0
         self._audio_client = ctypes.c_void_p()
 
         @QI
-        def query_interface(this, _riid, out):
-            out[0] = ctypes.cast(this, ctypes.c_void_p).value
-            return S_OK
+        def query_interface(this, riid, out):
+            requested = bytes(ctypes.string_at(riid, ctypes.sizeof(GUID)))
+            if requested in (
+                bytes(ctypes.string_at(ctypes.byref(IID_IUNKNOWN), ctypes.sizeof(GUID))),
+                bytes(ctypes.string_at(ctypes.byref(IID_IACTIVATE_COMPLETION_HANDLER), ctypes.sizeof(GUID))),
+            ):
+                out[0] = ctypes.cast(this, ctypes.c_void_p).value
+                return S_OK
+            ftm = getattr(self, "_ftm", None)
+            if ftm:
+                return method(
+                    ftm, 0, HRESULT, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)
+                )(riid, out)
+            out[0] = None
+            return E_NOINTERFACE
 
         @ADDREF
         def add_ref(_this):
@@ -150,18 +190,26 @@ class ApplicationLoopbackSource:
 
         @ACTIVATE_COMPLETED
         def activate_completed(_this, operation):
+            stage = "start"
             try:
                 result = HRESULT()
                 interface = ctypes.c_void_p()
+                stage = "get_activate_result"
                 get_result = method(
                     ctypes.c_void_p(operation), 3, HRESULT,
                     ctypes.POINTER(HRESULT), ctypes.POINTER(ctypes.c_void_p),
                 )
                 hr = get_result(ctypes.byref(result), ctypes.byref(interface))
-                self._activation_error = int(hr)
-                if result.value >= 0:
-                    self._activation_error = int(result.value)
+                stage = "store_activate_result"
+                self._activation_error = int(result.value if result.value < 0 else hr)
+                if result.value >= 0 and interface:
                     self._audio_client = interface
+                    self._activation_interface_value = int(interface.value or 0)
+                elif result.value >= 0:
+                    self._activation_error = E_FAIL
+            except Exception as exc:  # noqa: BLE001 - callback must not escape into COM
+                self._activation_exception = f"{stage}: {exc}"
+                self._activation_error = E_FAIL
             finally:
                 self._kernel32.SetEvent(self._activation_event)
             return S_OK
@@ -169,6 +217,16 @@ class ApplicationLoopbackSource:
         self._callbacks = (query_interface, add_ref, release, activate_completed)
         self._vtable = COM_VTABLE(query_interface, add_ref, release, activate_completed)
         self._callback_object = COM_OBJECT(ctypes.pointer(self._vtable))
+        self._ftm = ctypes.c_void_p()
+        create_ftm = self._ole32.CoCreateFreeThreadedMarshaler
+        create_ftm.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        create_ftm.restype = HRESULT
+        ftm_hr = create_ftm(
+            ctypes.cast(ctypes.pointer(self._callback_object), ctypes.c_void_p),
+            ctypes.byref(self._ftm),
+        )
+        if ftm_hr < 0:
+            raise RuntimeError(f"CoCreateFreeThreadedMarshaler failed: 0x{ftm_hr & 0xffffffff:08X}")
         self._params = ACTIVATION_PARAMS(
             1, PROCESS_LOOPBACK_PARAMS(self.process_id, 0 if self.include_children else 1)
         )
@@ -192,44 +250,73 @@ class ApplicationLoopbackSource:
         )
         if hr < 0:
             raise RuntimeError(f"ActivateAudioInterfaceAsync failed: 0x{hr & 0xffffffff:08X}")
-        self._kernel32.WaitForSingleObject(self._activation_event, 10_000)
+        self._activation_operation = operation
+        wait_result = self._kernel32.WaitForSingleObject(self._activation_event, 10_000)
+        if wait_result == WAIT_TIMEOUT:
+            self._activation_error = -2147023436  # HRESULT_FROM_WIN32(ERROR_TIMEOUT)
+        elif wait_result == WAIT_FAILED:
+            self._activation_error = E_FAIL
         if self._activation_error < 0 or not self._audio_client:
-            raise RuntimeError("Windows process loopback activation failed")
+            detail = f" HRESULT=0x{self._activation_error & 0xffffffff:08X}"
+            if not self._audio_client:
+                detail += f" interface=0x{self._activation_interface_value:016X}"
+            if self._activation_exception:
+                detail += f" ({self._activation_exception})"
+            if self._activation_error == HRESULT_FILE_NOT_FOUND:
+                detail += " (the selected process has no available process-loopback audio session, or Windows audio loopback is unavailable)"
+            self._release_com_pointer(self._activation_operation)
+            self._activation_operation = None
+            raise RuntimeError(f"Windows process loopback activation failed.{detail}")
+
+        self._release_com_pointer(self._activation_operation)
+        self._activation_operation = None
 
         self._capture_event = self._kernel32.CreateEventW(None, False, False, None)
         wave = WAVEFORMATEX(WAVE_FORMAT_PCM, 2, self.sample_rate, self.sample_rate * 4, 4, 16, 0)
         flags = STREAMFLAGS_LOOPBACK | STREAMFLAGS_EVENTCALLBACK | STREAMFLAGS_AUTOCONVERTPCM
         hr = method(
             self._audio_client, 3, HRESULT, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.POINTER(WAVEFORMATEX), ctypes.c_void_p,
-        )(SHAREMODE_SHARED, flags, 0, ctypes.byref(wave), None)
+            ctypes.c_int64, ctypes.c_int64, ctypes.POINTER(WAVEFORMATEX),
+            ctypes.c_void_p,
+        )(SHAREMODE_SHARED, flags, 0, 0, ctypes.byref(wave), None)
         if hr < 0:
             raise RuntimeError(f"IAudioClient.Initialize failed: 0x{hr & 0xffffffff:08X}")
         if method(self._audio_client, 13, HRESULT, ctypes.c_void_p)(self._capture_event) < 0:
             raise RuntimeError("IAudioClient.SetEventHandle failed")
         buffer_frames = UINT32()
-        method(self._audio_client, 4, HRESULT, ctypes.POINTER(UINT32))(ctypes.byref(buffer_frames))
+        hr = method(self._audio_client, 4, HRESULT, ctypes.POINTER(UINT32))(ctypes.byref(buffer_frames))
+        if hr < 0:
+            raise RuntimeError(f"IAudioClient.GetBufferSize failed: 0x{hr & 0xffffffff:08X}")
         capture_client = ctypes.c_void_p()
         hr = method(
             self._audio_client, 14, HRESULT, ctypes.POINTER(GUID),
             ctypes.POINTER(ctypes.c_void_p),
         )(ctypes.byref(IID_IAUDIO_CAPTURE_CLIENT), ctypes.byref(capture_client))
         if hr < 0 or not capture_client:
-            raise RuntimeError("IAudioClient.GetService failed")
+            raise RuntimeError(f"IAudioClient.GetService failed: 0x{hr & 0xffffffff:08X}")
         self._capture_client = capture_client
         self._block_align = 4
         if method(self._audio_client, 10, HRESULT)() < 0:
             raise RuntimeError("IAudioClient.Start failed")
 
+    @staticmethod
+    def _release_com_pointer(pointer) -> None:
+        if not pointer:
+            return
+        try:
+            method(pointer, 2, ctypes.c_ulong)()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+
     def read(self, timeout: float = 0.2) -> bytes:
-        if self._closed:
+        if self._closed or self._interrupted:
             return b""
         result = self._kernel32.WaitForSingleObject(
             self._capture_event, max(1, int(timeout * 1000))
         )
         if result == WAIT_TIMEOUT:
             return b""
-        if self._closed:
+        if self._closed or self._interrupted:
             return b""
         chunks: list[bytes] = []
         while True:
@@ -260,7 +347,9 @@ class ApplicationLoopbackSource:
         return b"".join(chunks)
 
     def interrupt(self) -> None:
-        self._closed = True
+        # Interrupting a blocking read must not mark the source as fully
+        # closed: _run_session() still calls close() in its finally block.
+        self._interrupted = True
         event = getattr(self, "_capture_event", None)
         if event:
             try:
@@ -269,8 +358,9 @@ class ApplicationLoopbackSource:
                 pass
 
     def close(self) -> None:
-        if getattr(self, "_closed", True):
+        if getattr(self, "_resources_closed", False):
             return
+        self._resources_closed = True
         self._closed = True
         try:
             method(self._audio_client, 11, HRESULT)()
@@ -279,12 +369,10 @@ class ApplicationLoopbackSource:
         for pointer in (
             getattr(self, "_capture_client", None),
             getattr(self, "_audio_client", None),
+            getattr(self, "_activation_operation", None),
+            getattr(self, "_ftm", None),
         ):
-            if pointer:
-                try:
-                    method(pointer, 2, ctypes.c_ulong)()
-                except Exception:
-                    pass
+            self._release_com_pointer(pointer)
         for name in ("_capture_event", "_activation_event"):
             handle = getattr(self, name, None)
             if handle:

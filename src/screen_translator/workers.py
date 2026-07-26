@@ -1,4 +1,4 @@
-"""Background workers that connect OCR and translation services to Qt."""
+"""Background worker that connects OCR and translation services to Qt."""
 
 from __future__ import annotations
 
@@ -18,15 +18,28 @@ class TranslationWorker(QThread):
     no_text = Signal()
     unchanged = Signal(str)
 
-    def __init__(self, image: Image.Image, settings: AppSettings, skip_text: str = ""):
+    def __init__(
+        self,
+        image: Image.Image,
+        settings: AppSettings,
+        skip_text: str = "",
+    ):
         super().__init__()
         self.image = image
         self.settings = settings
         self.skip_text = skip_text
 
+    def stop(self) -> None:
+        """Request a graceful stop before the next blocking stage."""
+        self.requestInterruption()
+
     def run(self) -> None:
         try:
+            if self.isInterruptionRequested():
+                return
             text = recognize_english(self.image, self.settings.tesseract_path)
+            if self.isInterruptionRequested():
+                return
             if not text:
                 self.no_text.emit()
                 return
@@ -35,10 +48,20 @@ class TranslationWorker(QThread):
                 return
 
             translated = translate_text(text, self.settings)
+            if self.isInterruptionRequested():
+                return
             self.completed.emit(text, translated)
         except pytesseract.TesseractNotFoundError:
-            self.failed.emit("找不到 Tesseract。请安装 Tesseract，或在设置中填写 tesseract.exe 的完整路径。")
+            if self.isInterruptionRequested():
+                return
+            self.failed.emit(
+                "找不到 Tesseract。请安装 Tesseract，或在设置中填写 tesseract.exe 的完整路径。"
+            )
         except requests.RequestException as exc:
+            if self.isInterruptionRequested():
+                return
             self.failed.emit(f"翻译请求失败：{exc}")
         except Exception as exc:  # noqa: BLE001 - 将第三方错误展示给用户
+            if self.isInterruptionRequested():
+                return
             self.failed.emit(str(exc))

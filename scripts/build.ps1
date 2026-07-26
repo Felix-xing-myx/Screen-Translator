@@ -20,6 +20,8 @@ try {
         "--noconfirm", "--clean", "--onedir", "--windowed",
         "--name", "ScreenTranslator",
         "--paths", "src",
+        "--icon", "src\screen_translator\assets\screen_translator.ico",
+        "--add-data", "src\screen_translator\assets;screen_translator\assets",
         "--collect-all", "dashscope",
         "--hidden-import", "pyaudiowpatch"
     )
