@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .audio_capture import AudioCaptureError, create_audio_source, pcm16_to_mono
 from .config import AppSettings
+from .performance import PerformanceStats
 from .vad import SpeechSegmenter
 
 
@@ -97,9 +98,12 @@ class AudioTranslationWorker(QThread):
     speech_changed = Signal(bool)
     failed = Signal(str)
 
-    def __init__(self, settings: AppSettings):
+    def __init__(
+        self, settings: AppSettings, stats: PerformanceStats | None = None
+    ):
         super().__init__()
         self.settings = settings
+        self.stats = stats
         self._stop_requested = False
         self._client: _GummyClient | None = None
         self._source = None
@@ -303,6 +307,8 @@ class AudioTranslationWorker(QThread):
                 self._client = _GummyClient(
                     self.settings, self._event, self._handle_api_error, self._emit_state
                 )
+                if self.stats is not None:
+                    self.stats.record_translation()
                 self._client.start()
             packet = bytes(self._send_buffer[:packet_size])
             del self._send_buffer[:packet_size]

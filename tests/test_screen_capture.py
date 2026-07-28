@@ -3,10 +3,22 @@ import unittest
 from PIL import Image
 from PySide6.QtCore import QRect
 
-from screen_translator.screen_capture import mask_excluded_regions
+from screen_translator.screen_capture import image_fingerprint, mask_excluded_regions
 
 
 class ScreenCaptureTests(unittest.TestCase):
+    def test_image_fingerprint_matches_same_content(self) -> None:
+        first = Image.new("RGB", (120, 80), (40, 80, 120))
+        second = first.copy()
+
+        self.assertEqual(image_fingerprint(first), image_fingerprint(second))
+
+    def test_image_fingerprint_changes_for_material_difference(self) -> None:
+        first = Image.new("RGB", (120, 80), (40, 80, 120))
+        second = Image.new("RGB", (120, 80), (220, 30, 30))
+
+        self.assertNotEqual(image_fingerprint(first), image_fingerprint(second))
+
     def test_masks_only_the_overlap_at_display_scale(self) -> None:
         image = Image.new("RGB", (20, 20), (255, 255, 255))
         capture_rect = QRect(100, 200, 10, 10)

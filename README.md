@@ -1,6 +1,6 @@
 # Screen Translator
 
-Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本为 1.0.1。
+Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本为 1.0.3。
 它把本地 OCR、屏幕区域监控和实时音频翻译组合在一个轻量的 Qt 浮窗工作流中。
 
 ## 功能
@@ -131,8 +131,8 @@ vendor\tesseract\tessdata\eng.traineddata
 输出：
 
 ~~~text
-dist\installer\ScreenTranslator-Setup-v1.0.1.exe
-dist\portable\ScreenTranslator-Portable-v1.0.1.zip
+dist\installer\ScreenTranslator-Setup-v1.0.3.exe
+dist\portable\ScreenTranslator-Portable-v1.0.3.zip
 ~~~
 
 如果只需要目录版，不需要安装 Inno Setup，执行 build.ps1 即可。

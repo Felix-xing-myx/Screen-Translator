@@ -19,7 +19,7 @@ class LongTranslatorTests(unittest.TestCase):
         requested: list[str] = []
 
         def fake_get(_url, params, timeout):
-            self.assertEqual(timeout, 30)
+            self.assertEqual(timeout, 20)
             requested.append(params["q"])
             return SimpleNamespace(
                 ok=True,
@@ -65,4 +65,3 @@ class LongTranslatorTests(unittest.TestCase):
         with patch("screen_translator.translator.requests.get", side_effect=fake_get):
             with self.assertRaisesRegex(RuntimeError, r"第 2/3 段翻译失败"):
                 translate_text("alpha beta gamma", AppSettings(), max_chars=7)
-

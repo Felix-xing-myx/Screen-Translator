@@ -77,16 +77,26 @@ def _prepare_ocr_image(image: Image.Image) -> Image.Image:
     return ocr_image
 
 
-def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
-    """Recognize English text from one user-selected screenshot region."""
+def recognize_text(
+    image: Image.Image,
+    tesseract_path: str = "",
+    language: str = "eng",
+) -> str:
+    """Recognize text using a Tesseract language code or language bundle."""
     _configure_for_ocr(tesseract_path)
     ocr_image = _prepare_ocr_image(image)
+    language = language.strip() or "eng"
 
     text = pytesseract.image_to_string(
-        ocr_image, lang="eng", config="--oem 3 --psm 11"
+        ocr_image, lang=language, config="--oem 3 --psm 11"
     ).strip()
     if not text:
         text = pytesseract.image_to_string(
-            ocr_image, lang="eng", config="--oem 3 --psm 6"
+            ocr_image, lang=language, config="--oem 3 --psm 6"
         ).strip()
     return text
+
+
+def recognize_english(image: Image.Image, tesseract_path: str = "") -> str:
+    """Backward-compatible wrapper for callers that still request English OCR."""
+    return recognize_text(image, tesseract_path, "eng")

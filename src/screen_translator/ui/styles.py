@@ -121,7 +121,8 @@ QLabel#brandSubtitle, QLabel#sectionSubtitle, QLabel#hintLabel {{
 }}
 
 QLabel#externalLinkLabel {{
-    color: {theme.accent_bright};
+    color: {theme.action_bright};
+    font-weight: 600;
 }}
 
 QLabel#externalLinkLabel:hover {{
@@ -148,7 +149,7 @@ QLabel#sectionTitle {{
     font-weight: 600;
 }}
 
-QLabel#statusBadge {{
+QLabel#statusBadge, QLabel#languageBadge {{
     background: transparent;
     border: 1px solid {theme.border_strong};
     border-radius: 5px;
@@ -157,12 +158,12 @@ QLabel#statusBadge {{
     font-size: 11px;
 }}
 
-QLabel#statusBadge[state="running"] {{
+QLabel#statusBadge[state="running"], QLabel#languageBadge[state="running"] {{
     border-color: {theme.action};
     color: {theme.action_bright};
 }}
 
-QLabel#statusBadge[state="error"] {{
+QLabel#statusBadge[state="error"], QLabel#languageBadge[state="error"] {{
     border-color: {theme.danger};
     color: {theme.danger};
 }}
@@ -171,6 +172,43 @@ QLabel#microLabel {{
     color: {theme.accent_bright};
     font-size: 10px;
     font-weight: 600;
+}}
+
+QLabel#performanceBadge {{
+    background: {theme.input_surface};
+    border: 1px solid {theme.border};
+    border-radius: 5px;
+    color: {theme.text_muted};
+    font-size: 8px;
+    padding: 0 6px;
+}}
+
+QLabel#authorLabel {{
+    color: {theme.text_muted};
+    font-size: 8px;
+    padding: 0 4px;
+}}
+
+QFrame#runtimeStatusPanel {{
+    background: {theme.input_surface};
+    border: 1px solid {theme.border};
+    border-radius: 6px;
+}}
+
+QLabel#runtimeStatusItem {{
+    background: transparent;
+    border: none;
+    color: {theme.text_muted};
+    font-size: 10px;
+    padding: 4px 8px;
+}}
+
+QLabel#runtimeStatusItem[state="running"] {{
+    color: {theme.action_bright};
+}}
+
+QLabel#runtimeStatusItem[state="error"] {{
+    color: {theme.danger};
 }}
 
 QPushButton {{
@@ -228,6 +266,27 @@ QPushButton[role="settings"] {{
 
 QPushButton[role="settings"]:hover {{
     background: rgba(107, 216, 255, 22);
+}}
+
+QPushButton#settingsButton {{
+    background: rgba(107, 216, 255, 8);
+    border: 1px solid {theme.border_strong};
+    border-radius: 6px;
+    color: {theme.accent_bright};
+    min-height: 0px;
+    padding: 4px 6px;
+    font-size: 11px;
+}}
+
+QPushButton#settingsButton:hover {{
+    background: rgba(107, 216, 255, 20);
+    border-color: {theme.accent};
+    color: {theme.text};
+}}
+
+QPushButton#settingsButton:pressed {{
+    background: rgba(107, 216, 255, 32);
+    border-color: {theme.accent_bright};
 }}
 
 QPushButton[role="ghost"] {{
@@ -316,10 +375,16 @@ QTabWidget::pane {{
     top: -1px;
 }}
 
+QTabWidget#mainTabs QTabBar {{
+    background: {theme.surface_alt};
+    qproperty-drawBase: 0;
+}}
+
 QTabBar::tab {{
-    background: transparent;
+    background: {theme.surface_alt};
     color: {theme.text_dim};
-    padding: 10px 20px;
+    min-height: 38px;
+    padding: 8px 20px;
     margin-right: 2px;
     border: 1px solid transparent;
     border-bottom-color: {theme.border};

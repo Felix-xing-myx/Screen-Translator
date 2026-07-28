@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QRect
+
+
+def image_fingerprint(image: Image.Image) -> bytes:
+    """Return a cheap, low-resolution fingerprint for change detection."""
+    thumbnail = image.convert("L").resize((32, 32), Image.Resampling.BILINEAR)
+    quantized = bytes(value // 16 for value in thumbnail.getdata())
+    return hashlib.blake2b(quantized, digest_size=8).digest()
 
 
 def mask_excluded_regions(

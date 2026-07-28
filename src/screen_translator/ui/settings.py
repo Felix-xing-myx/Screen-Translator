@@ -74,6 +74,9 @@ class SettingsDialog(QDialog):
             f'<a href="{self.QWEN_CONSOLE_URL}">打开阿里云百炼控制台，申请 API Key</a>'
         )
         self.qwen_console_link.setObjectName("externalLinkLabel")
+        self.qwen_console_link.setStyleSheet(
+            f"QLabel#externalLinkLabel {{ color: {DARK_THEME.action_bright}; }}"
+        )
         link_palette = self.qwen_console_link.palette()
         link_palette.setColor(
             QPalette.ColorRole.Link,
@@ -85,6 +88,8 @@ class SettingsDialog(QDialog):
         )
         self.qwen_console_link.setPalette(link_palette)
         self.qwen_console_link.setOpenExternalLinks(True)
+        self.qwen_console_link.setEnabled(True)
+        self.qwen_console_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.qwen_console_link.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextBrowserInteraction
         )
@@ -95,6 +100,11 @@ class SettingsDialog(QDialog):
         self.monitor_hotkey_enabled_check = QCheckBox("启用")
         self.monitor_hotkey_enabled_check.setChecked(
             settings.monitor_hotkey_enabled
+        )
+        self.monitor_ocr_concurrency_spin = QSpinBox()
+        self.monitor_ocr_concurrency_spin.setRange(1, 4)
+        self.monitor_ocr_concurrency_spin.setValue(
+            max(1, min(4, settings.monitor_ocr_concurrency))
         )
 
         translation_form = QFormLayout()
@@ -107,6 +117,9 @@ class SettingsDialog(QDialog):
         translation_form.addRow("持续监控热键：", self.monitor_hotkey_edit)
         translation_form.addRow(
             "启用持续监控热键：", self.monitor_hotkey_enabled_check
+        )
+        translation_form.addRow(
+            "持续监控 OCR 并发数：", self.monitor_ocr_concurrency_spin
         )
         translation_form.addRow("截图翻译服务商：", self.translation_provider_combo)
         translation_form.addRow("阿里云 Qwen-MT API Key：", self.translation_qwen_key_edit)
@@ -194,7 +207,9 @@ class SettingsDialog(QDialog):
         use_qwen = provider == "qwen_mt"
         self.translation_qwen_key_edit.setEnabled(use_qwen)
         self.translation_qwen_model_combo.setEnabled(use_qwen)
-        self.qwen_console_link.setEnabled(use_qwen)
+        # The console link is useful for every provider state and must not be
+        # disabled together with the Qwen-only credential fields.
+        self.qwen_console_link.setEnabled(True)
 
     def sync_hotkey_fields(self) -> None:
         self.hotkey_edit.setEnabled(self.hotkey_enabled_check.isChecked())
@@ -220,6 +235,9 @@ class SettingsDialog(QDialog):
         self.settings.monitor_hotkey = self.monitor_hotkey_edit.text().strip()
         self.settings.monitor_hotkey_enabled = (
             self.monitor_hotkey_enabled_check.isChecked()
+        )
+        self.settings.monitor_ocr_concurrency = (
+            self.monitor_ocr_concurrency_spin.value()
         )
         self.settings.audio_hotkey = self.audio_hotkey_edit.text().strip()
         self.settings.audio_hotkey_enabled = (

@@ -13,12 +13,15 @@ class ConfigTests(unittest.TestCase):
                 original = AppSettings(
                     target_language="ja",
                     overlay_font_size=18,
+                    overlay_scroll_speed=4,
                     translation_provider="qwen_mt",
                     translation_qwen_api_key="translation-key",
+                    source_language="ja",
                     dashscope_api_key="audio-key",
                     hotkey_enabled=False,
                     monitor_hotkey="Ctrl+Alt+M",
                     monitor_hotkey_enabled=True,
+                    monitor_ocr_concurrency=3,
                     audio_hotkey="Ctrl+Alt+A",
                     audio_hotkey_enabled=True,
                 )
@@ -27,12 +30,15 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(loaded.target_language, "ja")
         self.assertEqual(loaded.overlay_font_size, 18)
+        self.assertEqual(loaded.overlay_scroll_speed, 4)
         self.assertEqual(loaded.translation_provider, "qwen_mt")
         self.assertEqual(loaded.translation_qwen_api_key, "translation-key")
+        self.assertEqual(loaded.source_language, "ja")
         self.assertEqual(loaded.dashscope_api_key, "audio-key")
         self.assertFalse(loaded.hotkey_enabled)
         self.assertEqual(loaded.monitor_hotkey, "Ctrl+Alt+M")
         self.assertTrue(loaded.monitor_hotkey_enabled)
+        self.assertEqual(loaded.monitor_ocr_concurrency, 3)
         self.assertEqual(loaded.audio_hotkey, "Ctrl+Alt+A")
         self.assertTrue(loaded.audio_hotkey_enabled)
 

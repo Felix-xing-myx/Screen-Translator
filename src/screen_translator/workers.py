@@ -8,7 +8,9 @@ from PIL import Image
 from PySide6.QtCore import QThread, Signal
 
 from .config import AppSettings
-from .ocr import recognize_english
+from .languages import tesseract_language_for_source
+from .ocr import recognize_text
+from .performance import PerformanceStats
 from .translator import translate_text
 
 
@@ -23,11 +25,13 @@ class TranslationWorker(QThread):
         image: Image.Image,
         settings: AppSettings,
         skip_text: str = "",
+        stats: PerformanceStats | None = None,
     ):
         super().__init__()
         self.image = image
         self.settings = settings
         self.skip_text = skip_text
+        self.stats = stats
 
     def stop(self) -> None:
         """Request a graceful stop before the next blocking stage."""
@@ -37,7 +41,13 @@ class TranslationWorker(QThread):
         try:
             if self.isInterruptionRequested():
                 return
-            text = recognize_english(self.image, self.settings.tesseract_path)
+            if self.stats is not None:
+                self.stats.record_ocr()
+            text = recognize_text(
+                self.image,
+                self.settings.tesseract_path,
+                tesseract_language_for_source(self.settings.source_language),
+            )
             if self.isInterruptionRequested():
                 return
             if not text:
@@ -47,6 +57,8 @@ class TranslationWorker(QThread):
                 self.unchanged.emit(text)
                 return
 
+            if self.stats is not None:
+                self.stats.record_translation()
             translated = translate_text(text, self.settings)
             if self.isInterruptionRequested():
                 return

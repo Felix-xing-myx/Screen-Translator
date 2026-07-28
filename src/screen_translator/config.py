@@ -27,6 +27,7 @@ class AppSettings:
     hotkey_enabled: bool = False
     monitor_hotkey: str = "Ctrl+Shift+M"
     monitor_hotkey_enabled: bool = False
+    monitor_ocr_concurrency: int = 1
     audio_hotkey: str = "Ctrl+Shift+A"
     audio_hotkey_enabled: bool = False
     overlay_x: int = -1
@@ -35,6 +36,7 @@ class AppSettings:
     overlay_text_opacity: int = 100
     overlay_font_size: int = 14
     overlay_mask_opacity: int = 45
+    overlay_scroll_speed: int = 1
     overlay_width: int = 520
     overlay_height: int = 220
     dashscope_api_key: str = ""

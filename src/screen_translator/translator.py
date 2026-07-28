@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import html
+import time
 
 import requests
 
 from .config import AppSettings
+from .languages import normalize_qwen_code, qwen_language_name
 
 
 # MyMemory rejects requests above 500 characters. Leave headroom for API
@@ -15,33 +17,18 @@ MAX_TRANSLATION_CHARS = 450
 # Qwen-MT accepts a much larger token window. Keep a conservative character
 # budget so OCR text stays in one request without approaching its 8K-token cap.
 QWEN_MAX_TRANSLATION_CHARS = 4000
+TRANSLATION_TIMEOUT_SECONDS = 20
+TRANSLATION_MAX_RETRIES = 2
+_RETRYABLE_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+class _RetryableTranslationError(RuntimeError):
+    """Internal marker for a service response that is safe to retry."""
 
 
 def _qwen_language(value: str) -> str:
     """Convert the app's language values to Qwen-MT language names."""
-    names = {
-        "auto": "auto",
-        "en": "English",
-        "en-US": "English",
-        "zh": "Chinese",
-        "zh-CN": "Chinese",
-        "zh_tw": "Traditional Chinese",
-        "ja": "Japanese",
-        "ja-JP": "Japanese",
-        "ko": "Korean",
-        "ko-KR": "Korean",
-        "fr": "French",
-        "de": "German",
-        "es": "Spanish",
-        "ru": "Russian",
-        "it": "Italian",
-        "pt": "Portuguese",
-        "vi": "Vietnamese",
-        "th": "Thai",
-        "id": "Indonesian",
-        "ar": "Arabic",
-    }
-    return names.get(value.strip(), value.strip())
+    return qwen_language_name(normalize_qwen_code(value))
 
 
 def _response_value(value, key: str, default=None):
@@ -71,6 +58,10 @@ def _translate_qwen_chunk(text: str, settings: AppSettings) -> str:
     )
     status_code = _response_value(response, "status_code", 200)
     if status_code not in (None, 200):
+        if status_code in _RETRYABLE_HTTP_STATUS_CODES:
+            raise _RetryableTranslationError(
+                f"Qwen-MT temporarily unavailable (HTTP {status_code})"
+            )
         if status_code == 403:
             raise RuntimeError(
                 "阿里云百炼 API 返回 403：免费额度可能已用尽，请充值后继续使用。"
@@ -143,7 +134,7 @@ def _translate_chunk(text: str, settings: AppSettings) -> str:
                 "q": text,
                 "langpair": f"{settings.source_language}|{target_language}",
             },
-            timeout=30,
+            timeout=TRANSLATION_TIMEOUT_SECONDS,
         )
     else:  # custom HTTP translation endpoint kept for compatibility
         payload = {
@@ -154,7 +145,11 @@ def _translate_chunk(text: str, settings: AppSettings) -> str:
         }
         if settings.translation_api_key:
             payload["api_key"] = settings.translation_api_key
-        response = requests.post(settings.translation_url, json=payload, timeout=30)
+        response = requests.post(
+            settings.translation_url,
+            json=payload,
+            timeout=TRANSLATION_TIMEOUT_SECONDS,
+        )
 
     if not response.ok:
         try:
@@ -163,7 +158,10 @@ def _translate_chunk(text: str, settings: AppSettings) -> str:
         except ValueError:
             error_message = response.text.strip()
         detail = f"：{error_message}" if error_message else ""
-        raise RuntimeError(f"翻译接口返回 HTTP {response.status_code}{detail}")
+        error = f"翻译接口返回 HTTP {response.status_code}{detail}"
+        if response.status_code in _RETRYABLE_HTTP_STATUS_CODES:
+            raise _RetryableTranslationError(error)
+        raise RuntimeError(error)
 
     data = response.json()
     if "mymemory.translated.net" in settings.translation_url:
@@ -198,14 +196,22 @@ def translate_text(
     translated_chunks: list[str] = []
     total = len(chunks)
     for index, chunk in enumerate(chunks, start=1):
-        try:
-            translated_chunks.append(_translate_chunk(chunk, settings))
-        except requests.RequestException:
-            raise
-        except Exception as exc:  # noqa: BLE001 - add segment context for the UI
-            if total > 1:
-                raise RuntimeError(f"第 {index}/{total} 段翻译失败：{exc}") from exc
-            raise
+        for attempt in range(TRANSLATION_MAX_RETRIES + 1):
+            try:
+                translated_chunks.append(_translate_chunk(chunk, settings))
+                break
+            except (requests.RequestException, _RetryableTranslationError) as exc:
+                if attempt >= TRANSLATION_MAX_RETRIES:
+                    if total > 1:
+                        raise RuntimeError(
+                            f"第 {index}/{total} 段翻译失败：{exc}"
+                        ) from exc
+                    raise
+                time.sleep(0.5 * (2**attempt))
+            except Exception as exc:  # noqa: BLE001 - add segment context for the UI
+                if total > 1:
+                    raise RuntimeError(f"第 {index}/{total} 段翻译失败：{exc}") from exc
+                raise
 
     # Chunks are deliberately trimmed at whitespace/punctuation boundaries.
     # Newlines make separate API results readable in the existing result pane.

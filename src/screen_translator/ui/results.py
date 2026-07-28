@@ -181,9 +181,28 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
         self.scroll_pause_timer = QTimer(self)
         self.scroll_pause_timer.setSingleShot(True)
         self.scroll_pause_timer.timeout.connect(self.start_auto_scroll)
+        self.manual_scroll_pause_timer = QTimer(self)
+        self.manual_scroll_pause_timer.setSingleShot(True)
+        self.manual_scroll_pause_timer.timeout.connect(self._resume_after_manual_scroll)
+        self.scroll_speed = 1
+        self._manual_scroll_paused = False
         self.scroll_direction = 1
         self.display_revision = 0
         self.pending_scroll_state: tuple[int, bool, int] | None = None
+        scrollbar = self.translation_scroll.verticalScrollBar()
+        scrollbar.sliderPressed.connect(self._pause_auto_scroll_for_user)
+        scrollbar.sliderMoved.connect(
+            lambda _value: self._pause_auto_scroll_for_user()
+        )
+        scrollbar.actionTriggered.connect(
+            lambda _action: self._pause_auto_scroll_for_user()
+        )
+        for widget in (
+            self.translation_scroll,
+            self.translation_scroll.viewport(),
+            self.translation_content,
+        ):
+            widget.installEventFilter(self)
         self.install_overlay_resize_filter()
 
     def update_result(self, original: str, translated: str) -> None:
@@ -328,12 +347,14 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
         maximum = scrollbar.maximum()
         scrollbar.setValue(maximum if followed_bottom else min(old_value, maximum))
         self.scroll_direction = old_direction
-        if maximum > 0 and self.isVisible():
+        if maximum > 0 and self.isVisible() and not self._manual_scroll_paused:
             self.scroll_pause_timer.start(1200)
 
     def restart_auto_scroll(self) -> None:
         self.scroll_timer.stop()
         self.scroll_pause_timer.stop()
+        self.manual_scroll_pause_timer.stop()
+        self._manual_scroll_paused = False
         scrollbar = self.translation_scroll.verticalScrollBar()
         scrollbar.setValue(0)
         self.scroll_direction = 1
@@ -342,8 +363,26 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
 
     def start_auto_scroll(self) -> None:
         scrollbar = self.translation_scroll.verticalScrollBar()
-        if scrollbar.maximum() > 0 and self.isVisible():
+        if (
+            scrollbar.maximum() > 0
+            and self.isVisible()
+            and not self._manual_scroll_paused
+        ):
             self.scroll_timer.start()
+
+    def _pause_auto_scroll_for_user(self) -> None:
+        """Keep user-selected content visible for four seconds."""
+        scrollbar = self.translation_scroll.verticalScrollBar()
+        if scrollbar.maximum() <= 0 or not self.isVisible():
+            return
+        self.scroll_timer.stop()
+        self.scroll_pause_timer.stop()
+        self._manual_scroll_paused = True
+        self.manual_scroll_pause_timer.start(4000)
+
+    def _resume_after_manual_scroll(self) -> None:
+        self._manual_scroll_paused = False
+        self.start_auto_scroll()
 
     def auto_scroll_step(self) -> None:
         scrollbar = self.translation_scroll.verticalScrollBar()
@@ -351,7 +390,7 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
         if maximum <= 0 or not self.isVisible():
             self.scroll_timer.stop()
             return
-        next_value = scrollbar.value() + self.scroll_direction
+        next_value = scrollbar.value() + self.scroll_direction * self.scroll_speed
         if next_value >= maximum:
             scrollbar.setValue(maximum)
             self.scroll_direction = -1
@@ -369,6 +408,8 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
         """窗口锁定状态切换后，从当前位置恢复自动滚动。"""
         self.scroll_timer.stop()
         self.scroll_pause_timer.stop()
+        self.manual_scroll_pause_timer.stop()
+        self._manual_scroll_paused = False
         scrollbar = self.translation_scroll.verticalScrollBar()
         if scrollbar.maximum() > 0 and self.isVisible():
             self.scroll_pause_timer.start(300)
@@ -392,6 +433,9 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
     def set_translation_font_size(self, point_size: int) -> None:
         self.translation_font_size = max(9, min(28, int(point_size)))
         self.fit_translation_font()
+
+    def set_scroll_speed(self, speed: int) -> None:
+        self.scroll_speed = max(1, min(10, int(speed)))
 
     def apply_visual_style(self) -> None:
         background_alpha = round(255 * self.background_opacity / 100)
@@ -490,6 +534,22 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
             pass
 
     def eventFilter(self, watched, event) -> bool:
+        if watched in (
+            self.translation_scroll,
+            self.translation_scroll.viewport(),
+            self.translation_content,
+        ):
+            if event.type() == QEvent.Type.Wheel:
+                self._pause_auto_scroll_for_user()
+            elif event.type() == QEvent.Type.KeyPress and event.key() in (
+                Qt.Key.Key_Up,
+                Qt.Key.Key_Down,
+                Qt.Key.Key_PageUp,
+                Qt.Key.Key_PageDown,
+                Qt.Key.Key_Home,
+                Qt.Key.Key_End,
+            ):
+                self._pause_auto_scroll_for_user()
         return super().eventFilter(watched, event)
 
     def is_result_widget(self, watched) -> bool:
@@ -547,10 +607,12 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
         self.remove_overlay_resize_filter()
         self.scroll_timer.stop()
         self.scroll_pause_timer.stop()
+        self.manual_scroll_pause_timer.stop()
         self.stop_requested.emit()
         super().closeEvent(event)
 
     def hideEvent(self, event) -> None:
         self.scroll_timer.stop()
         self.scroll_pause_timer.stop()
+        self.manual_scroll_pause_timer.stop()
         super().hideEvent(event)

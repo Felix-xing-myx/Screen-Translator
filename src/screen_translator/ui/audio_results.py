@@ -76,6 +76,10 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
         self._current_hold_timer = QTimer(self)
         self._current_hold_timer.setSingleShot(True)
         self._current_hold_timer.timeout.connect(self._release_current_hold)
+        self._partial_throttle_timer = QTimer(self)
+        self._partial_throttle_timer.setSingleShot(True)
+        self._partial_throttle_timer.setInterval(80)
+        self._partial_throttle_timer.timeout.connect(self._flush_pending_partial)
         self._current_hold_active = False
         self._pending_partial: tuple[str, str] | None = None
         self._pending_completed: list[tuple[str, str]] = []
@@ -310,9 +314,15 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
         )
 
     def update_partial(self, original: str, translated: str) -> None:
-        if self._current_hold_active:
-            self._pending_partial = (original, translated)
+        self._pending_partial = (original, translated)
+        if not self._current_hold_active and not self._partial_throttle_timer.isActive():
+            self._partial_throttle_timer.start()
+
+    def _flush_pending_partial(self) -> None:
+        if self._current_hold_active or self._pending_partial is None:
             return
+        original, translated = self._pending_partial
+        self._pending_partial = None
         self._update_current_text(original, translated)
 
     def _update_current_text(self, original: str, translated: str) -> None:
@@ -421,6 +431,8 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
     def append_result(self, original: str, translated: str) -> None:
         if not original and not translated:
             return
+        self._partial_throttle_timer.stop()
+        self._pending_partial = None
         self._append_history_card(original, translated)
         if self._current_hold_active:
             self._pending_partial = None
@@ -528,6 +540,7 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
 
     def clear(self) -> None:
         self._current_hold_timer.stop()
+        self._partial_throttle_timer.stop()
         self._current_hold_active = False
         self._pending_partial = None
         self._pending_completed.clear()
