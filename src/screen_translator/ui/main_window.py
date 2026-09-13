@@ -20,10 +20,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QCheckBox,
     QComboBox,
     QLabel,
+    QLineEdit,
     QMenu,
     QMainWindow,
     QMessageBox,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QSystemTrayIcon,
     QTabWidget,
@@ -40,9 +43,13 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..audio_capture import AudioCaptureError, list_audio_devices
+from ..audio_capture import (
+    AudioCaptureError,
+    list_audio_devices,
+    list_audio_output_devices,
+)
 from ..capture import CaptureOverlay, MultiRegionOverlay
-from ..audio_translation import AudioTranslationWorker
+from ..audio_translation import AUDIO_TRANSLATION_MODEL_OPTIONS, AudioTranslationWorker
 from ..config import AppSettings, load_settings, save_settings
 from ..hotkeys import GlobalHotkeyFilter
 from ..languages import (
@@ -54,6 +61,7 @@ from ..languages import (
 from ..models import MonitorRegion
 from ..performance import PerformanceStats
 from ..screen_capture import image_fingerprint, mask_excluded_regions
+from ..voice_relay import VoiceRelayWorker, list_sapi_voices
 from ..workers import TranslationWorker
 from .monitor import MonitorSetupDialog
 from .results import MonitorResultWindow
@@ -129,6 +137,7 @@ class MainWindow(QMainWindow):
         self.performance_stats = PerformanceStats()
         self.worker: TranslationWorker | None = None
         self.audio_worker: AudioTranslationWorker | None = None
+        self.voice_relay_worker: VoiceRelayWorker | None = None
         self._audio_stop_requested = False
         self.monitor_workers: dict[tuple[int, int], TranslationWorker] = {}
         self.monitor_frame_fingerprints: dict[int, bytes] = {}
@@ -241,6 +250,25 @@ class MainWindow(QMainWindow):
         self.audio_lock_button.setEnabled(False)
         self.audio_lock_button.clicked.connect(self.toggle_audio_lock)
 
+        self.audio_model_combo = QComboBox()
+        for model_id, model_label in AUDIO_TRANSLATION_MODEL_OPTIONS:
+            self.audio_model_combo.addItem(model_label, model_id)
+        model_index = self.audio_model_combo.findData(
+            self.settings.audio_translation_model
+        )
+        self.audio_model_combo.setCurrentIndex(model_index if model_index >= 0 else 0)
+        self.audio_model_combo.setToolTip(
+            "推荐使用 Qwen3.5 LiveTranslate；Gummy 已被百炼列入计划下线模型。"
+        )
+        self.audio_model_id_edit = QLineEdit()
+        self.audio_model_id_edit.setPlaceholderText(
+            "选择“自定义模型”后填写模型 ID"
+        )
+        self.audio_model_id_edit.setToolTip(
+            "选择预设模型时此处会自动同步；选择自定义模型时可填写百炼中的模型 ID。"
+        )
+        self._sync_audio_model_fields()
+
         self.audio_mode_combo = QComboBox()
         self.audio_mode_combo.addItem("系统全局声音", "global")
         self.audio_mode_combo.addItem("指定进程（含子进程）", "process")
@@ -262,6 +290,62 @@ class MainWindow(QMainWindow):
         device_index = self.audio_device_combo.findData(self.settings.audio_device_id)
         if device_index >= 0:
             self.audio_device_combo.setCurrentIndex(device_index)
+
+        self.audio_voice_relay_check = QCheckBox("将译文输出到虚拟麦克风")
+        self.audio_voice_relay_check.setChecked(
+            self.settings.audio_voice_relay_enabled
+        )
+        self.audio_relay_output_combo = QComboBox()
+        self.audio_relay_output_combo.addItem("请选择虚拟音频输出设备", -1)
+        try:
+            for device in list_audio_output_devices():
+                self.audio_relay_output_combo.addItem(device.name, device.index)
+        except AudioCaptureError:
+            self.audio_relay_output_combo.setToolTip(
+                "无法读取输出设备；请确认音频驱动已安装。"
+            )
+        output_index = self.audio_relay_output_combo.findData(
+            self.settings.audio_relay_output_device_id
+        )
+        if output_index >= 0:
+            self.audio_relay_output_combo.setCurrentIndex(output_index)
+        self.audio_relay_output_combo.setToolTip(
+            "VB-CABLE 请选 CABLE Input；游戏内麦克风请选择 CABLE Output。"
+        )
+
+        self.audio_relay_voice_combo = QComboBox()
+        self.audio_relay_voice_combo.addItem("系统默认语音", "")
+        for voice in list_sapi_voices():
+            label = voice.name if not voice.culture else f"{voice.name} ({voice.culture})"
+            self.audio_relay_voice_combo.addItem(label, voice.name)
+        voice_index = self.audio_relay_voice_combo.findData(
+            self.settings.audio_relay_voice_name
+        )
+        if voice_index >= 0:
+            self.audio_relay_voice_combo.setCurrentIndex(voice_index)
+
+        self.audio_relay_rate_spin = QSpinBox()
+        self.audio_relay_rate_spin.setRange(-5, 5)
+        self.audio_relay_rate_spin.setPrefix("语速 ")
+        self.audio_relay_rate_spin.setValue(
+            max(-5, min(5, self.settings.audio_relay_rate))
+        )
+        self.audio_relay_volume_row = SliderRow(
+            "输出音量",
+            0,
+            150,
+            max(0, min(150, self.settings.audio_relay_volume)),
+        )
+        self.audio_relay_volume_slider = self.audio_relay_volume_row.slider
+        self.audio_relay_queue_spin = QSpinBox()
+        self.audio_relay_queue_spin.setRange(1, 5)
+        self.audio_relay_queue_spin.setValue(
+            max(1, min(5, self.settings.audio_relay_queue_limit))
+        )
+        self.voice_relay_status_badge = StatusBadge("语音输出 未启用")
+        self.voice_relay_status_badge.setToolTip(
+            "完整句译文会由 Windows 系统语音合成，并播放到所选虚拟音频设备。"
+        )
 
         self.audio_process_combo = QComboBox()
         self.audio_process_combo.addItem("请选择应用进程", 0)
@@ -288,6 +372,24 @@ class MainWindow(QMainWindow):
             self._audio_process_changed
         )
         self.audio_children_check.toggled.connect(self._audio_children_changed)
+        self.audio_model_combo.currentIndexChanged.connect(
+            self._audio_model_changed
+        )
+        self.audio_model_id_edit.editingFinished.connect(
+            self._audio_model_id_changed
+        )
+        self.audio_voice_relay_check.toggled.connect(self._voice_relay_toggled)
+        self.audio_relay_output_combo.currentIndexChanged.connect(
+            self._audio_relay_output_changed
+        )
+        self.audio_relay_voice_combo.currentIndexChanged.connect(
+            self._audio_relay_voice_changed
+        )
+        self.audio_relay_rate_spin.valueChanged.connect(self._audio_relay_rate_changed)
+        self.audio_relay_volume_slider.valueChanged.connect(
+            self._audio_relay_volume_changed
+        )
+        self.audio_relay_queue_spin.valueChanged.connect(self._audio_relay_queue_changed)
 
         self.audio_source_language_combo = QComboBox()
         for code in AUDIO_SOURCE_LANGUAGES:
@@ -558,36 +660,128 @@ class MainWindow(QMainWindow):
             "监听系统声音、指定进程或麦克风，并实时显示翻译。",
             object_name="heroCard",
         )
-        audio_control.setMinimumWidth(280)
+        # The audio workflow has two independent concerns: selecting a source
+        # and optionally relaying translated speech.  Keep them side-by-side
+        # so the page remains usable at the compact window height instead of
+        # extending the form downward.
+        audio_control.setMinimumWidth(0)
+        audio_control.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         audio_source_form = QFormLayout()
         audio_source_form.setContentsMargins(0, 0, 0, 0)
+        audio_source_form.setHorizontalSpacing(8)
+        audio_source_form.setVerticalSpacing(6)
         audio_source_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        audio_source_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         audio_source_form.addRow("监听模式", self.audio_mode_combo)
+        audio_source_form.addRow("翻译模型", self.audio_model_combo)
+        audio_source_form.addRow("模型 ID", self.audio_model_id_edit)
         audio_source_form.addRow("音频设备", self.audio_device_combo)
-        audio_source_form.addRow("应用进程", self.audio_process_combo)
-        audio_source_form.addRow("", self.audio_process_refresh_button)
-        audio_control.add_layout(audio_source_form)
-        audio_control.add_widget(self.audio_children_check)
-        audio_control.add_widget(self.audio_button)
-        audio_control.add_widget(self.audio_lock_button)
+        process_picker = QWidget()
+        process_picker_layout = QHBoxLayout(process_picker)
+        process_picker_layout.setContentsMargins(0, 0, 0, 0)
+        process_picker_layout.setSpacing(6)
+        process_picker_layout.addWidget(self.audio_process_combo, 1)
+        self.audio_process_refresh_button.setText("刷新")
+        self.audio_process_refresh_button.setObjectName(
+            "audioProcessRefreshButton"
+        )
+        self.audio_process_refresh_button.setToolTip("刷新应用进程列表")
+        self.audio_process_refresh_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        process_picker_layout.addWidget(self.audio_process_refresh_button)
+        audio_source_form.addRow("应用进程", process_picker)
+        audio_source_form.addRow("捕获范围", self.audio_children_check)
+
+        relay_form = QFormLayout()
+        relay_form.setContentsMargins(0, 0, 0, 0)
+        relay_form.setHorizontalSpacing(8)
+        relay_form.setVerticalSpacing(6)
+        relay_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        relay_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        relay_form.addRow("语音转译", self.audio_voice_relay_check)
+        relay_form.addRow("虚拟输出", self.audio_relay_output_combo)
+        relay_form.addRow("系统语音", self.audio_relay_voice_combo)
+        relay_form.addRow("合成语速", self.audio_relay_rate_spin)
+        relay_form.addRow("最大排队句数", self.audio_relay_queue_spin)
+
+        source_column = QVBoxLayout()
+        source_column.setContentsMargins(0, 0, 0, 0)
+        source_column.setSpacing(6)
+        source_heading = QLabel("音频来源")
+        source_heading.setObjectName("eyebrowLabel")
+        source_column.addWidget(source_heading)
+        source_column.addLayout(audio_source_form)
+
+        relay_column = QVBoxLayout()
+        relay_column.setContentsMargins(0, 0, 0, 0)
+        relay_column.setSpacing(6)
+        relay_heading = QLabel("同声转译输出")
+        relay_heading.setObjectName("eyebrowLabel")
+        relay_column.addWidget(relay_heading)
+        relay_column.addLayout(relay_form)
+
+        audio_config_columns = QHBoxLayout()
+        audio_config_columns.setContentsMargins(0, 0, 0, 0)
+        audio_config_columns.setSpacing(18)
+        audio_config_columns.addLayout(source_column, 1)
+        audio_config_columns.addLayout(relay_column, 1)
+        audio_control.add_layout(audio_config_columns)
+
+        audio_output_status_row = QHBoxLayout()
+        audio_output_status_row.setContentsMargins(0, 0, 0, 0)
+        audio_output_status_row.setSpacing(12)
+        audio_output_status_row.addWidget(self.audio_relay_volume_row, 1)
+        audio_output_status_row.addWidget(self.voice_relay_status_badge)
+        audio_control.add_layout(audio_output_status_row)
+
+        audio_actions = QHBoxLayout()
+        audio_actions.setContentsMargins(0, 0, 0, 0)
+        audio_actions.setSpacing(8)
+        self.audio_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.audio_lock_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        audio_actions.addWidget(self.audio_button, 3)
+        audio_actions.addWidget(self.audio_lock_button, 2)
+        audio_control.add_layout(audio_actions)
         audio_note = QLabel("API Key、VAD 和历史记录数量仍在“设置中心”调整。")
         audio_note.setObjectName("hintLabel")
         audio_note.setWordWrap(True)
         audio_control.add_widget(audio_note)
-        audio_layout.addWidget(audio_control)
+        audio_layout.addWidget(audio_control, 11)
         audio_appearance = SectionCard(
             "音频翻译窗口外观",
             "当前句子和历史记录的透明度可以独立调整。",
         )
+        audio_appearance.setMinimumWidth(0)
+        audio_appearance.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         audio_appearance.add_widget(self.audio_language_row)
         audio_appearance.add_widget(self.audio_language_badge)
-        audio_appearance.add_widget(self.audio_background_row)
-        audio_appearance.add_widget(self.audio_text_row)
-        audio_appearance.add_widget(self.audio_history_text_row)
+        appearance_controls = QGridLayout()
+        appearance_controls.setContentsMargins(0, 2, 0, 0)
+        appearance_controls.setHorizontalSpacing(18)
+        appearance_controls.setVerticalSpacing(8)
+        appearance_controls.addWidget(self.audio_background_row, 0, 0)
+        appearance_controls.addWidget(self.audio_text_row, 0, 1)
+        appearance_controls.addWidget(self.audio_history_text_row, 1, 0)
+        appearance_controls.addWidget(self.audio_font_scale_row, 1, 1)
+        appearance_controls.addWidget(self.audio_mask_row, 2, 0, 1, 2)
+        appearance_controls.setColumnStretch(0, 1)
+        appearance_controls.setColumnStretch(1, 1)
+        audio_appearance.add_layout(appearance_controls)
         audio_appearance.add_widget(self.audio_show_original_checkbox)
-        audio_appearance.add_widget(self.audio_font_scale_row)
-        audio_appearance.add_widget(self.audio_mask_row)
-        audio_layout.addWidget(audio_appearance, 1)
+        audio_layout.addWidget(audio_appearance, 8)
         self.main_tabs.addTab(audio_page, "音频翻译")
 
         # QTabWidget's corner widget can extend beyond the tab bar on some
@@ -610,6 +804,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(footer)
         self.setCentralWidget(body)
         self.setStyleSheet(MAIN_STYLE_SHEET)
+        self._sync_voice_relay_fields()
         self._sync_audio_source_fields()
         self._refresh_language_indicators()
         self.setup_tray()
@@ -815,6 +1010,15 @@ class MainWindow(QMainWindow):
         if SettingsDialog(self.settings, self).exec() != QDialog.DialogCode.Accepted:
             return
         self._populate_translation_language_combos()
+        if hasattr(self, "audio_model_combo"):
+            model_index = self.audio_model_combo.findData(
+                self.settings.audio_translation_model
+            )
+            if model_index >= 0:
+                self.audio_model_combo.blockSignals(True)
+                self.audio_model_combo.setCurrentIndex(model_index)
+                self.audio_model_combo.blockSignals(False)
+            self._sync_audio_model_fields()
         if self.hotkey_settings_snapshot() == old_hotkeys:
             return
         self.unregister_hotkeys()
@@ -1125,13 +1329,82 @@ class MainWindow(QMainWindow):
 
     def _sync_audio_source_fields(self) -> None:
         mode = self.audio_mode_combo.currentData()
-        process_mode = mode == "process"
+        relay_enabled = self.audio_voice_relay_check.isChecked()
+        if relay_enabled and mode != "microphone":
+            microphone_index = self.audio_mode_combo.findData("microphone")
+            if microphone_index >= 0:
+                self.audio_mode_combo.blockSignals(True)
+                self.audio_mode_combo.setCurrentIndex(microphone_index)
+                self.audio_mode_combo.blockSignals(False)
+                mode = "microphone"
+        process_mode = mode == "process" and not relay_enabled
         self.audio_process_combo.setEnabled(process_mode)
         self.audio_children_check.setEnabled(process_mode)
         self.audio_device_combo.setEnabled(not process_mode)
         if mode and mode != self.settings.audio_source_mode:
             self.settings.audio_source_mode = mode
             save_settings(self.settings)
+
+    def _sync_voice_relay_fields(self) -> None:
+        enabled = self.audio_voice_relay_check.isChecked()
+        for widget in (
+            self.audio_relay_output_combo,
+            self.audio_relay_voice_combo,
+            self.audio_relay_rate_spin,
+            self.audio_relay_volume_row,
+            self.audio_relay_queue_spin,
+        ):
+            widget.setEnabled(enabled)
+        self.audio_mode_combo.setEnabled(not enabled)
+        self._sync_audio_source_fields()
+        self._refresh_voice_relay_status()
+
+    def _voice_relay_toggled(self, checked: bool) -> None:
+        self.settings.audio_voice_relay_enabled = bool(checked)
+        self._sync_voice_relay_fields()
+        save_settings(self.settings)
+
+    def _audio_relay_output_changed(self, _index: int) -> None:
+        self.settings.audio_relay_output_device_id = int(
+            self.audio_relay_output_combo.currentData() or -1
+        )
+        save_settings(self.settings)
+
+    def _audio_relay_voice_changed(self, _index: int) -> None:
+        self.settings.audio_relay_voice_name = str(
+            self.audio_relay_voice_combo.currentData() or ""
+        )
+        save_settings(self.settings)
+
+    def _audio_relay_rate_changed(self, value: int) -> None:
+        self.settings.audio_relay_rate = int(value)
+        save_settings(self.settings)
+
+    def _audio_relay_volume_changed(self, value: int) -> None:
+        self.settings.audio_relay_volume = int(value)
+        save_settings(self.settings)
+
+    def _audio_relay_queue_changed(self, value: int) -> None:
+        self.settings.audio_relay_queue_limit = int(value)
+        save_settings(self.settings)
+
+    def _refresh_voice_relay_status(self) -> None:
+        worker = self.voice_relay_worker
+        running = False
+        if worker is not None:
+            try:
+                running = worker.isRunning()
+            except RuntimeError:
+                self.voice_relay_worker = None
+        if running:
+            self.voice_relay_status_badge.setText("语音输出 工作中")
+            self.voice_relay_status_badge.set_state("running")
+        elif self.audio_voice_relay_check.isChecked():
+            self.voice_relay_status_badge.setText("语音输出 待启动")
+            self.voice_relay_status_badge.set_state("idle")
+        else:
+            self.voice_relay_status_badge.setText("语音输出 未启用")
+            self.voice_relay_status_badge.set_state("idle")
 
     def _audio_device_changed(self, _index: int) -> None:
         self.settings.audio_device_id = int(
@@ -1149,6 +1422,35 @@ class MainWindow(QMainWindow):
 
     def _audio_children_changed(self, checked: bool) -> None:
         self.settings.audio_include_children = bool(checked)
+        save_settings(self.settings)
+
+    def _audio_model_changed(self, _index: int) -> None:
+        model = str(self.audio_model_combo.currentData() or "")
+        if model not in {item[0] for item in AUDIO_TRANSLATION_MODEL_OPTIONS}:
+            return
+        self.settings.audio_translation_model = model
+        if model != "custom":
+            self.settings.audio_custom_translation_model_id = model
+        self._sync_audio_model_fields()
+        save_settings(self.settings)
+
+    def _sync_audio_model_fields(self) -> None:
+        model = str(self.audio_model_combo.currentData() or "")
+        if model == "custom":
+            self.audio_model_id_edit.setText(
+                self.settings.audio_custom_translation_model_id.strip()
+            )
+            self.audio_model_id_edit.setReadOnly(False)
+            return
+        self.audio_model_id_edit.setText(model)
+        self.audio_model_id_edit.setReadOnly(True)
+
+    def _audio_model_id_changed(self) -> None:
+        if self.audio_model_combo.currentData() != "custom":
+            return
+        self.settings.audio_custom_translation_model_id = (
+            self.audio_model_id_edit.text().strip()
+        )
         save_settings(self.settings)
 
     def refresh_audio_processes(self) -> None:
@@ -1794,6 +2096,22 @@ class MainWindow(QMainWindow):
                 "请先在设置中填写阿里云 DashScope API Key，或设置 DASHSCOPE_API_KEY 环境变量。",
             )
             return
+        if self.settings.audio_voice_relay_enabled:
+            if self.settings.audio_relay_output_device_id < 0:
+                QMessageBox.warning(
+                    self,
+                    "语音转译输出",
+                    "请先选择虚拟音频输出设备。VB-CABLE 请选 CABLE Input；"
+                    "游戏内麦克风请选择 CABLE Output。",
+                )
+                return
+            # A voice relay must receive the user's microphone, never system
+            # or process loopback audio, otherwise it can translate itself.
+            self.settings.audio_source_mode = "microphone"
+            microphone_index = self.audio_mode_combo.findData("microphone")
+            if microphone_index >= 0:
+                self.audio_mode_combo.setCurrentIndex(microphone_index)
+            save_settings(self.settings)
         worker = self.audio_worker
         if worker is not None:
             try:
@@ -1827,11 +2145,14 @@ class MainWindow(QMainWindow):
         self._reset_detected_language("audio")
         self.audio_result_window.show()
         self.audio_result_window.raise_()
+        if self.settings.audio_voice_relay_enabled:
+            self.start_voice_relay()
         self.audio_worker = AudioTranslationWorker(
             self.settings, stats=self.performance_stats
         )
         self.audio_worker.partial.connect(self.audio_result_window.update_partial)
         self.audio_worker.completed.connect(self.audio_result_window.append_result)
+        self.audio_worker.completed.connect(self.enqueue_voice_relay)
         self.audio_worker.partial.connect(self.audio_text_detected)
         self.audio_worker.completed.connect(self.audio_text_detected)
         self.audio_worker.state_changed.connect(self.audio_result_window.set_state)
@@ -1846,6 +2167,80 @@ class MainWindow(QMainWindow):
         self.audio_button.setText("停止音频翻译")
         self.sync_tray_actions()
         self.audio_worker.start()
+
+    def start_voice_relay(self) -> None:
+        worker = self.voice_relay_worker
+        if worker is not None:
+            try:
+                if worker.isRunning():
+                    return
+                worker.deleteLater()
+            except RuntimeError:
+                pass
+        worker = VoiceRelayWorker(self.settings)
+        self.voice_relay_worker = worker
+        worker.state_changed.connect(self.voice_relay_state_changed)
+        worker.failed.connect(self.voice_relay_failed)
+        worker.speaking_changed.connect(self.voice_relay_speaking_changed)
+        worker.finished.connect(lambda relay=worker: self.voice_relay_finished(relay))
+        worker.start()
+        self._refresh_voice_relay_status()
+
+    def enqueue_voice_relay(self, _original: str, translated: str) -> None:
+        worker = self.voice_relay_worker
+        if worker is None or not translated:
+            return
+        try:
+            if worker.isRunning():
+                worker.enqueue(translated)
+        except RuntimeError:
+            self.voice_relay_worker = None
+            self._refresh_voice_relay_status()
+
+    def voice_relay_state_changed(self, state: str) -> None:
+        if self._audio_stop_requested:
+            return
+        self.status_label.setText(f"语音转译：{state}")
+        self._refresh_voice_relay_status()
+
+    def voice_relay_speaking_changed(self, speaking: bool) -> None:
+        if speaking:
+            self.voice_relay_status_badge.setText("语音输出 播放中")
+            self.voice_relay_status_badge.set_state("running")
+        else:
+            self._refresh_voice_relay_status()
+
+    def voice_relay_failed(self, message: str) -> None:
+        if self._audio_stop_requested:
+            return
+        self.voice_relay_status_badge.setText("语音输出 错误")
+        self.voice_relay_status_badge.set_state("error")
+        self.status_label.setText(f"语音转译输出错误：{message}")
+
+    def voice_relay_finished(self, worker: VoiceRelayWorker) -> None:
+        if worker is self.voice_relay_worker:
+            self.voice_relay_worker = None
+        try:
+            worker.deleteLater()
+        except RuntimeError:
+            pass
+        self._refresh_voice_relay_status()
+
+    def stop_voice_relay(self, wait: bool = False) -> None:
+        worker = self.voice_relay_worker
+        if worker is None:
+            self._refresh_voice_relay_status()
+            return
+        try:
+            worker.stop()
+            if wait and worker.isRunning():
+                worker.wait(5000)
+            if wait and not worker.isRunning():
+                self.voice_relay_worker = None
+                worker.deleteLater()
+        except RuntimeError:
+            self.voice_relay_worker = None
+        self._refresh_voice_relay_status()
 
     def audio_translation_failed(self, message: str) -> None:
         if self._audio_stop_requested:
@@ -1866,6 +2261,7 @@ class MainWindow(QMainWindow):
         if worker is self.audio_worker:
             was_stopping = self._audio_stop_requested
             self.audio_worker = None
+            self.stop_voice_relay(wait=was_stopping)
             self.audio_button.setEnabled(True)
             self.audio_button.setText("开始音频翻译")
             self.sync_tray_actions()
@@ -1881,6 +2277,7 @@ class MainWindow(QMainWindow):
     def stop_audio_translation(self, wait: bool = False) -> None:
         worker = self.audio_worker
         self._audio_stop_requested = True
+        self.stop_voice_relay(wait=wait)
         if worker is not None:
             self.audio_button.setEnabled(False)
             self.audio_button.setText("正在停止音频翻译")

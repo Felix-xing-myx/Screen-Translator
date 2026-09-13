@@ -1,6 +1,6 @@
 # Screen Translator
 
-Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本为 1.0.3。
+Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本为 1.0.4。
 它把本地 OCR、屏幕区域监控和实时音频翻译组合在一个轻量的 Qt 浮窗工作流中。
 
 ## 功能
@@ -8,6 +8,7 @@ Screen Translator 是一个面向 Windows 的桌面翻译工具，当前版本�
 - 截图翻译：框选屏幕区域，使用本机 Tesseract OCR 后翻译。
 - 持续监控：监控多个屏幕区域，检测文字变化后自动识别和翻译。
 - 音频翻译：捕获系统声音、指定进程声音或麦克风，调用 DashScope Gummy 实时翻译。
+- 语音转译输出：将完整句译文通过 Windows 系统语音合成后输出到虚拟麦克风，供游戏语音聊天使用。
 - 结果浮窗：支持透明度、字体、拖动、调整大小、锁定和鼠标穿透。
 - 系统托盘：关闭主窗口后驻留托盘，左键打开，右键打开主窗口或退出。
 - 单实例运行：重复启动不会创建第二个程序进程。
@@ -82,6 +83,7 @@ uv run --extra dev ruff check src tests
 - Tesseract 路径、语言、音频来源和目标语言。
 - VAD 灵敏度、句尾静音阈值和历史记录数量。
 - 翻译浮窗和音频浮窗的大小、位置、透明度和锁定状态。
+- 语音转译输出的虚拟设备、系统语音、语速、音量和最大排队句数。
 
 用户设置保存于：
 
@@ -96,8 +98,25 @@ $env:DASHSCOPE_API_KEY = "your-api-key"
 .\scripts\run.ps1
 ~~~
 
+阿里云 Qwen-MT 翻译模型可在设置中心直接选择常用预置项，也可以自行填写模型
+ID；该模型必须支持 Qwen-MT 的文本翻译接口。音频翻译默认使用 Qwen
+LiveTranslate 实时接口：本地 VAD 负责静音门控和上传成本控制，服务端 VAD
+负责持续会话中的协议级语音边界；这样可以避免长时间监听时手动提交和服务端状态竞争。
+Gummy 仅作为旧版兼容选项保留。
+
 MyMemory 仅建议用于小规模测试。发送敏感内容或大量文本前，应使用自己的
 翻译服务并确认服务商的商业和隐私条款。
+
+### 游戏语音转译输出
+
+该功能为句子级翻译：程序监听真实麦克风，待一句话完成翻译后使用 Windows
+系统语音合成译文，并将声音播放到用户选择的虚拟音频设备。它不复刻用户音色，
+不保存录音，也不会注入或修改游戏进程。
+
+以 VB-CABLE 为例：在本程序的“音频翻译”页启用“将译文输出到虚拟麦克风”，
+将“虚拟输出”选择为 `CABLE Input`；随后在游戏内把麦克风选择为
+`CABLE Output`。启用后程序会强制使用麦克风作为监听来源，避免将系统声音或
+自身输出再次翻译。VB-CABLE 需要用户自行安装，并应遵守其授权条款。
 
 ## 构建
 
@@ -120,6 +139,18 @@ vendor\tesseract\tesseract.exe
 vendor\tesseract\tessdata\eng.traineddata
 ~~~
 
+如果需要不依赖旁边 `_internal` 目录的单文件版本，可执行：
+
+~~~powershell
+.\scripts\build-standalone.ps1
+~~~
+
+输出：
+
+~~~text
+dist\standalone\ScreenTranslator-Standalone.exe
+~~~
+
 ### Windows 安装版和免安装版
 
 先安装 Inno Setup 6，然后执行：
@@ -131,8 +162,9 @@ vendor\tesseract\tessdata\eng.traineddata
 输出：
 
 ~~~text
-dist\installer\ScreenTranslator-Setup-v1.0.3.exe
-dist\portable\ScreenTranslator-Portable-v1.0.3.zip
+dist\installer\ScreenTranslator-Setup-v1.0.4.exe
+dist\portable\ScreenTranslator-Portable-v1.0.4.zip
+dist\ScreenTranslator-Standalone-v1.0.4.exe
 ~~~
 
 如果只需要目录版，不需要安装 Inno Setup，执行 build.ps1 即可。
@@ -178,7 +210,7 @@ CONTRIBUTING.md。
 - 独占全屏 DirectX、管理员权限程序和反作弊保护程序可能阻止截图、浮窗、
   鼠标穿透或全局热键。
 - 目标进程必须实际输出音频，进程级捕获才有有效结果。
-- 音频 VAD 在 Python 3.14 下使用 Energy VAD 回退实现。
+- 音频 VAD 在 Python 3.14 下使用 Energy VAD 回退实现；回退实现已针对低音量实时语音降低检测门槛，并保留短停顿合并窗口，减少快速语音漏词和过短切片。
 - API Key、OCR 文本和音频可能发送到第三方服务，请在商业发布时提供清晰的
   隐私政策和第三方服务说明。
 

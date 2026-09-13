@@ -10,13 +10,15 @@ The script:
 
 1. Synchronizes the development environment through uv when available.
 2. Builds the PyInstaller directory with the bundled Tesseract runtime.
-3. Compiles packaging\ScreenTranslator.iss with Inno Setup 6.
-4. Creates a portable ZIP from the same PyInstaller directory.
+3. Builds a self-contained PyInstaller single-file executable.
+4. Compiles packaging\ScreenTranslator.iss with Inno Setup 6.
+5. Creates a portable ZIP from the same PyInstaller directory.
 
 Outputs are written to:
 
 ~~~text
 dist\ScreenTranslator\
+dist\ScreenTranslator-Standalone-v<version>.exe
 dist\installer\ScreenTranslator-Setup-v<version>.exe
 dist\portable\ScreenTranslator-Portable-v<version>.zip
 ~~~

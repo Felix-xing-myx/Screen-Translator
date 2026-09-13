@@ -115,3 +115,20 @@ class TranslatorTests(unittest.TestCase):
             call.call_args.kwargs["translation_options"],
             {"source_lang": "Japanese", "target_lang": "French"},
         )
+
+    def test_qwen_mt_uses_user_supplied_model_id(self) -> None:
+        response = SimpleNamespace(
+            status_code=200,
+            output=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="你好"))]
+            ),
+        )
+        settings = AppSettings(
+            translation_provider="qwen_mt",
+            translation_qwen_api_key="translation-key",
+            translation_qwen_model="qwen-mt-plus-custom",
+        )
+        with patch("dashscope.Generation.call", return_value=response) as call:
+            self.assertEqual(translate_text("hello", settings), "你好")
+
+        self.assertEqual(call.call_args.kwargs["model"], "qwen-mt-plus-custom")

@@ -1,5 +1,5 @@
 #define MyAppName "Screen Translator"
-#define MyAppVersion "1.0.3"
+#define MyAppVersion "1.0.4"
 #define MyAppExeName "ScreenTranslator.exe"
 
 [Setup]
@@ -12,7 +12,7 @@ DefaultGroupName={#MyAppName}
 SetupIconFile=..\src\screen_translator\assets\screen_translator.ico
 UninstallDisplayIcon={app}\ScreenTranslator.exe
 OutputDir=..\dist\installer
-OutputBaseFilename=ScreenTranslator-Setup-v1.0.3
+OutputBaseFilename=ScreenTranslator-Setup-v1.0.4
 PrivilegesRequired=lowest
 Compression=lzma
 SolidCompression=yes

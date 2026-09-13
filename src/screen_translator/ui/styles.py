@@ -239,6 +239,14 @@ QPushButton:disabled {{
     color: {theme.text_dim};
 }}
 
+/* The process picker is a compact form row; do not apply the tall action
+   button padding here, especially on high-DPI Windows displays. */
+QPushButton#audioProcessRefreshButton {{
+    min-height: 0px;
+    max-height: 20px;
+    padding: 2px 10px;
+}}
+
 QPushButton[role="primary"] {{
     background: transparent;
     border: 1px solid {theme.action};

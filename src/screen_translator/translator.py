@@ -47,9 +47,10 @@ def _translate_qwen_chunk(text: str, settings: AppSettings) -> str:
     except ImportError as exc:  # pragma: no cover - dependency is in production extras
         raise RuntimeError("当前环境未安装 dashscope，请先安装项目依赖。") from exc
 
+    model_id = settings.translation_qwen_model.strip() or "qwen-mt-flash"
     response = dashscope.Generation.call(
         api_key=api_key,
-        model=settings.translation_qwen_model or "qwen-mt-flash",
+        model=model_id,
         messages=[{"role": "user", "content": text}],
         translation_options={
             "source_lang": _qwen_language(settings.source_language),

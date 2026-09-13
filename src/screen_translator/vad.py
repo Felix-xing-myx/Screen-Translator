@@ -7,6 +7,9 @@ from collections import deque
 from typing import Callable
 
 
+DEFAULT_VAD_BRIDGE_MS = 320
+
+
 class VADUnavailableError(RuntimeError):
     pass
 
@@ -14,7 +17,11 @@ class VADUnavailableError(RuntimeError):
 class EnergyVAD:
     """Small dependency-free fallback for environments without WebRTC VAD."""
 
-    _THRESHOLDS = (120, 240, 480, 960)
+    # RMS thresholds.  The fallback is commonly used on Python 3.14, where
+    # the native WebRTC VAD wheel is not available.  The old mode-2 threshold
+    # (480) rejected quiet syllables from games and browser audio; keep the
+    # same four sensitivity levels but lower the floor for live speech.
+    _THRESHOLDS = (80, 160, 320, 640)
 
     def __init__(self, mode: int = 2):
         self.threshold_squared = self._THRESHOLDS[mode] ** 2
@@ -38,6 +45,7 @@ class SpeechSegmenter:
         start_ms: int = 60,
         pre_roll_ms: int = 240,
         post_roll_ms: int = 800,
+        bridge_ms: int = DEFAULT_VAD_BRIDGE_MS,
         vad_engine=None,
     ):
         if sample_rate not in (8000, 16000, 32000, 48000):
@@ -60,6 +68,9 @@ class SpeechSegmenter:
         self.start_frames = max(1, round(start_ms / frame_ms))
         self.pre_roll = deque(maxlen=max(0, round(pre_roll_ms / frame_ms)))
         self.post_frames = max(1, round(post_roll_ms / frame_ms))
+        # Short unvoiced dips are common between words in fast speech. Keep
+        # the segment open for a grace window before declaring its end.
+        self.bridge_frames = max(0, round(bridge_ms / frame_ms))
         self._vad = vad_engine
         self._pending = bytearray()
         self._active = False
@@ -108,7 +119,7 @@ class SpeechSegmenter:
         if on_active_audio is not None:
             on_active_audio(frame)
         self._unvoiced_count = 0 if voiced else self._unvoiced_count + 1
-        if self._unvoiced_count < self.post_frames:
+        if self._unvoiced_count < self.post_frames + self.bridge_frames:
             return []
         segment = bytes(self._segment)
         self._active = False

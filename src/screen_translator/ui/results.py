@@ -296,7 +296,13 @@ class MonitorResultWindow(OverlayResizeMixin, QDialog):
             self.restore_scroll_after_update(revision)
             return
         selected_font = QFont(self.font())
-        selected_font.setPointSize(self.translation_font_size)
+        # A font created from a stylesheet can report an unresolved size as
+        # -1 during Qt startup. Never pass that value to setPointSize(), which
+        # otherwise emits a QFont warning when settings dialogs are opened.
+        point_size = int(self.translation_font_size)
+        if point_size <= 0:
+            point_size = 14
+        selected_font.setPointSize(point_size)
         for _card, body in self.translation_cards:
             body.setFont(selected_font)
             body.updateGeometry()

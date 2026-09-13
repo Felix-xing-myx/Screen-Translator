@@ -1215,7 +1215,7 @@ wheels = [
 
 [[package]]
 name = "screen-translator"
-version = "1.0.3"
+version = "1.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "dashscope" },
@@ -1227,6 +1227,7 @@ dependencies = [
     { name = "pytesseract" },
     { name = "requests" },
     { name = "webrtcvad-wheels", marker = "python_full_version < '3.14'" },
+    { name = "websocket-client" },
 ]
 
 [package.optional-dependencies]
@@ -1250,6 +1251,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31,<3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<1" },
     { name = "webrtcvad-wheels", marker = "python_full_version < '3.14'", specifier = ">=2.0.14,<3" },
+    { name = "websocket-client", specifier = ">=1.8,<2" },
 ]
 provides-extras = ["dev"]
 

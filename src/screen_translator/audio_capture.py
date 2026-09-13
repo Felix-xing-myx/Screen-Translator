@@ -22,6 +22,14 @@ class AudioDevice:
     channels: int
 
 
+@dataclass(frozen=True)
+class AudioOutputDevice:
+    index: int
+    name: str
+    sample_rate: int
+    channels: int
+
+
 class AudioSource(Protocol):
     sample_rate: int
     channels: int
@@ -51,6 +59,26 @@ def list_audio_devices() -> list[AudioDevice]:
                 "global" if info.get("isLoopbackDevice", False) else "microphone",
                 max(1, int(float(info.get("defaultSampleRate", 16000)))), channels,
             ))
+    return result
+
+
+def list_audio_output_devices() -> list[AudioOutputDevice]:
+    """Return playback devices, including virtual cable inputs when present."""
+    pyaudio = _import_pyaudio()
+    result: list[AudioOutputDevice] = []
+    with pyaudio.PyAudio() as manager:
+        for info in manager.get_device_info_generator():
+            channels = int(info.get("maxOutputChannels", 0) or 0)
+            if channels <= 0:
+                continue
+            result.append(
+                AudioOutputDevice(
+                    int(info["index"]),
+                    str(info.get("name", "Output device")),
+                    max(1, int(float(info.get("defaultSampleRate", 16_000)))),
+                    channels,
+                )
+            )
     return result
 
 
@@ -111,6 +139,102 @@ class PyAudioSource:
         manager = getattr(self, "_manager", None)
         if manager is not None:
             manager.terminate()
+
+
+def scale_pcm16(data: bytes, volume_percent: int) -> bytes:
+    """Apply volume to little-endian signed 16-bit PCM without new dependencies."""
+    volume = max(0, min(200, int(volume_percent))) / 100
+    if not data or volume == 1:
+        return data
+    usable_length = len(data) - (len(data) % 2)
+    values = struct.unpack("<%dh" % (usable_length // 2), data[:usable_length])
+    scaled = [max(-32768, min(32767, round(value * volume))) for value in values]
+    return struct.pack("<%dh" % len(scaled), *scaled) + data[usable_length:]
+
+
+class PyAudioOutputSink:
+    """Blocking PCM playback adapter for a selected Windows output device."""
+
+    def __init__(self, device_id: int):
+        if int(device_id) < 0:
+            raise AudioCaptureError("请选择虚拟麦克风输出设备")
+        pyaudio = _import_pyaudio()
+        self._pyaudio = pyaudio
+        self._manager = pyaudio.PyAudio()
+        self.device_id = int(device_id)
+        self._stream = None
+        self._interrupted = False
+        try:
+            info = self._manager.get_device_info_by_index(self.device_id)
+            if int(info.get("maxOutputChannels", 0) or 0) <= 0:
+                raise AudioCaptureError("选择的设备不支持音频输出")
+        except AudioCaptureError:
+            self._manager.terminate()
+            raise
+        except Exception as exc:
+            self._manager.terminate()
+            raise AudioCaptureError(f"无法打开音频输出设备：{exc}") from exc
+
+    def play(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        channels: int,
+        *,
+        volume_percent: int = 100,
+    ) -> None:
+        if not pcm:
+            return
+        if channels <= 0 or sample_rate <= 0:
+            raise AudioCaptureError("无效的合成音频格式")
+        self._interrupted = False
+        stream = None
+        try:
+            stream = self._manager.open(
+                format=self._pyaudio.paInt16,
+                channels=int(channels),
+                rate=int(sample_rate),
+                output=True,
+                output_device_index=self.device_id,
+                frames_per_buffer=max(160, round(sample_rate / 10)),
+            )
+            self._stream = stream
+            data = scale_pcm16(pcm, volume_percent)
+            bytes_per_chunk = max(2 * channels, round(sample_rate / 10) * 2 * channels)
+            for offset in range(0, len(data), bytes_per_chunk):
+                if self._interrupted:
+                    return
+                stream.write(data[offset : offset + bytes_per_chunk])
+        except Exception as exc:
+            if not self._interrupted:
+                raise AudioCaptureError(f"无法播放合成语音：{exc}") from exc
+        finally:
+            if self._stream is stream:
+                self._stream = None
+            if stream is not None:
+                for action in (stream.stop_stream, stream.close):
+                    try:
+                        action()
+                    except Exception:
+                        pass
+
+    def interrupt(self) -> None:
+        self._interrupted = True
+        stream = self._stream
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self.interrupt()
+        manager = getattr(self, "_manager", None)
+        if manager is not None:
+            try:
+                manager.terminate()
+            except Exception:
+                pass
 
 
 def pcm16_to_mono(data: bytes, sample_rate: int, channels: int) -> bytes:

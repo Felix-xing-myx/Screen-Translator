@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 from ctypes import wintypes
 
 from PySide6.QtCore import (
@@ -83,6 +84,12 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
         self._current_hold_active = False
         self._pending_partial: tuple[str, str] | None = None
         self._pending_completed: list[tuple[str, str]] = []
+        self._active_completed: tuple[str, str] | None = None
+        self._current_hold_revision = 0
+        self._current_hold_started_at: float | None = None
+        self._current_hold_deadline: float | None = None
+        self._last_history_signature: tuple[str, str] | None = None
+        self._last_history_inserted_at = 0.0
         self._current_hold_ms = 2200
         self._show_current_original = True
         self._font_scale_multiplier = 1.0
@@ -429,28 +436,104 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
             timer.stop()
 
     def append_result(self, original: str, translated: str) -> None:
-        if not original and not translated:
+        # History is deliberately stricter than the live preview.  Partial
+        # provider events may contain only one side while ASR and translation
+        # are still converging; such a pair must never become a permanent
+        # card with a misleading placeholder like "（无原文）".
+        original = str(original or "").strip()
+        translated = str(translated or "").strip()
+        placeholder_text = {
+            "（无原文）",
+            "(无原文)",
+            "（无译文）",
+            "(无译文)",
+        }
+        if (
+            not original
+            or not translated
+            or original in placeholder_text
+            or translated in placeholder_text
+        ):
             return
         self._partial_throttle_timer.stop()
         self._pending_partial = None
-        self._append_history_card(original, translated)
-        if self._current_hold_active:
-            self._pending_partial = None
-            self._pending_completed.append((original, translated))
+        result = (original, translated)
+        # Ignore a repeated completion while this result is still visible or
+        # waiting behind it.  This handles duplicate provider finals and
+        # replay notifications without hiding a later, distinct sentence.
+        if result == self._active_completed or result in self._pending_completed:
             return
-        self._update_current_text(original, translated)
-        self._start_current_hold()
+        if self._current_hold_active:
+            self._pending_completed.append(result)
+            return
+        self._show_completed_result(result)
+
+    def _show_completed_result(self, result: tuple[str, str]) -> None:
+        self._active_completed = result
+        self._current_hold_active = True
+        self._current_hold_revision += 1
+        revision = self._current_hold_revision
+        self._current_hold_timer.stop()
+        self._current_hold_started_at = None
+        self._current_hold_deadline = None
+        self._update_current_text(*result)
+        # QPlainTextEdit performs wrapping, scrollbar layout, and repainting
+        # on the next event-loop turn. Start the hold after that turn instead
+        # of charging layout time against the user's viewing time.
+        QTimer.singleShot(
+            0,
+            lambda result=result, revision=revision: self._arm_current_hold(
+                result, revision
+            ),
+        )
+
+    def _arm_current_hold(
+        self, result: tuple[str, str], revision: int
+    ) -> None:
+        if (
+            not self._current_hold_active
+            or self._active_completed != result
+            or self._current_hold_revision != revision
+        ):
+            return
+        now = time.monotonic()
+        self._current_hold_started_at = now
+        # Keep an explicit deadline because a queued/stale timeout must not
+        # be able to move a completed result to history early.  The configured
+        # 2.2s hold is never allowed to fall below the requested 1.2s minimum.
+        hold_seconds = max(1.2, self._current_hold_ms / 1000.0)
+        self._current_hold_deadline = now + hold_seconds
+        self._current_hold_timer.start(round(hold_seconds * 1000))
 
     def _start_current_hold(self) -> None:
+        """Compatibility wrapper for callers from older UI integrations."""
         self._current_hold_active = True
-        self._current_hold_timer.start(self._current_hold_ms)
+        if self._active_completed is not None:
+            self._current_hold_revision += 1
+            self._arm_current_hold(
+                self._active_completed, self._current_hold_revision
+            )
 
     def _release_current_hold(self) -> None:
+        if self._current_hold_active:
+            deadline = self._current_hold_deadline
+            if deadline is None:
+                # The result has not reached the post-layout arm callback yet.
+                return
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                self._current_hold_timer.start(max(1, round(remaining * 1000)))
+                return
         self._current_hold_active = False
+        self._current_hold_started_at = None
+        self._current_hold_deadline = None
+        if self._active_completed is not None:
+            original, translated = self._active_completed
+            self._append_history_card(original, translated)
+            self._active_completed = None
         if self._pending_completed:
-            original, translated = self._pending_completed.pop(0)
-            self._update_current_text(original, translated)
-            self._start_current_hold()
+            result = self._pending_completed.pop(0)
+            self._show_completed_result(result)
             return
         if self._pending_partial is not None:
             original, translated = self._pending_partial
@@ -458,6 +541,15 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
             self._update_current_text(original, translated)
 
     def _append_history_card(self, original: str, translated: str) -> None:
+        signature = (original, translated)
+        now = time.monotonic()
+        if (
+            signature == self._last_history_signature
+            and now - self._last_history_inserted_at < 3.0
+        ):
+            return
+        self._last_history_signature = signature
+        self._last_history_inserted_at = now
         history_snapshot = self._capture_history_scroll()
         while len(self._history_cards) >= self._history_limit:
             self._remove_oldest_card()
@@ -540,10 +632,16 @@ class AudioTranslationWindow(OverlayResizeMixin, QDialog):
 
     def clear(self) -> None:
         self._current_hold_timer.stop()
+        self._current_hold_revision += 1
         self._partial_throttle_timer.stop()
         self._current_hold_active = False
+        self._current_hold_started_at = None
+        self._current_hold_deadline = None
         self._pending_partial = None
         self._pending_completed.clear()
+        self._active_completed = None
+        self._last_history_signature = None
+        self._last_history_inserted_at = 0.0
         self._current_update_revision += 1
         self._history_scroll_revision += 1
         self._current_follow_bottom["original"] = False

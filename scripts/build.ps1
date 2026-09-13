@@ -32,6 +32,10 @@ try {
         "--icon", (Join-Path $assetsRoot 'screen_translator.ico'),
         "--add-data", "$assetsRoot;screen_translator\assets",
         "--collect-all", "dashscope",
+        "--collect-binaries", "PySide6",
+        "--collect-all", "shiboken6",
+        "--runtime-hook", (Join-Path $PSScriptRoot 'pyi_rth_qt_paths.py'),
+        "--hidden-import", "websocket",
         "--hidden-import", "pyaudiowpatch"
     )
     if ($uvCommand) {

@@ -40,6 +40,9 @@ class AppSettings:
     overlay_width: int = 520
     overlay_height: int = 220
     dashscope_api_key: str = ""
+    dashscope_workspace_id: str = ""
+    audio_translation_model: str = "qwen3.5-livetranslate-flash-realtime"
+    audio_custom_translation_model_id: str = ""
     audio_source_mode: str = "global"
     audio_device_id: int = -1
     audio_process_id: int = 0
@@ -63,6 +66,16 @@ class AppSettings:
     audio_window_y: int = -1
     audio_window_width: int = 560
     audio_window_height: int = 430
+    # Voice relay uses the existing microphone translation flow and sends
+    # completed translated sentences to a user-selected virtual audio device.
+    # A negative output device id deliberately means "not configured" so the
+    # feature cannot accidentally play translated speech through speakers.
+    audio_voice_relay_enabled: bool = False
+    audio_relay_output_device_id: int = -1
+    audio_relay_voice_name: str = ""
+    audio_relay_rate: int = 0
+    audio_relay_volume: int = 100
+    audio_relay_queue_limit: int = 2
 
 
 def settings_path() -> Path:
@@ -108,6 +121,15 @@ def load_settings() -> AppSettings:
             )
         if settings.translation_provider not in {"mymemory", "qwen_mt", "custom"}:
             settings.translation_provider = "mymemory"
+        valid_audio_models = {
+            "qwen3.5-livetranslate-flash-realtime",
+            "qwen3-livetranslate-flash-realtime",
+            "gummy-realtime-v1",
+            "custom",
+        }
+        if settings.audio_translation_model not in valid_audio_models:
+            settings.audio_custom_translation_model_id = settings.audio_translation_model
+            settings.audio_translation_model = "custom"
         if settings.translation_url == "https://libretranslate.com/translate":
             settings.translation_url = AppSettings().translation_url
             settings.target_language = AppSettings().target_language
