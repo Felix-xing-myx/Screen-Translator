@@ -2,7 +2,7 @@
 
 ## First setup
 
-From E:\translate:
+From the project root:
 
 ~~~powershell
 .\scripts\bootstrap.ps1

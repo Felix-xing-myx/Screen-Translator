@@ -35,7 +35,7 @@ pyproject.toml
   -> editable install of src/screen_translator
 ~~~
 
-推荐使用 uv 管理环境。项目根目录就是 E:\translate，不能把
+推荐使用 uv 管理环境。请在项目根目录执行命令，不能把
 src\screen_translator 单独作为工作区打开。
 
 ### 初始化环境
