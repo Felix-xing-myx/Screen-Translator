@@ -31,6 +31,12 @@ if (-not ((Test-Path -LiteralPath $tesseractExe) -and
     }
 }
 
+$systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }
+$systemIcu = Join-Path $systemRoot 'System32\icuuc.dll'
+if (-not (Test-Path -LiteralPath $systemIcu -PathType Leaf)) {
+    throw "Windows system ICU was not found at $systemIcu. This build requires the Windows ICU ABI used by Qt6Core."
+}
+
 $pyInstallerArgs = @(
     '--noconfirm', '--clean', '--onefile', '--windowed',
     '--name', 'ScreenTranslator-Standalone',

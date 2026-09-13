@@ -15,7 +15,6 @@ $requiredFiles = @(
     '_internal\PySide6\Qt6Core.dll',
     '_internal\PySide6\pyside6.abi3.dll',
     '_internal\shiboken6\shiboken6.abi3.dll',
-    '_internal\icuuc.dll',
     '_internal\VCRUNTIME140.dll',
     '_internal\VCRUNTIME140_1.dll'
 )
@@ -28,9 +27,11 @@ if ($missingFiles.Count -gt 0) {
     throw "PyInstaller bundle is missing required files: $($missingFiles -join ', ')"
 }
 
-$icuData = Get-ChildItem -LiteralPath (Join-Path $BundleRoot '_internal') -File -Filter 'icudt*.dll'
-if ($icuData.Count -eq 0) {
-    throw 'PyInstaller bundle is missing the ICU data DLL (icudt*.dll).'
+$privateIcuFiles = Get-ChildItem -LiteralPath (Join-Path $BundleRoot '_internal') -Recurse -File |
+    Where-Object { $_.Name -match '^icu.*\.dll$' }
+if ($privateIcuFiles.Count -gt 0) {
+    $paths = $privateIcuFiles | ForEach-Object { $_.FullName }
+    throw "PyInstaller bundle contains incompatible private ICU DLLs; remove them so Qt uses Windows ICU: $($paths -join ', ')"
 }
 
 Write-Host "Bundle verification passed: $BundleRoot"

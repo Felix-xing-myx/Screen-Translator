@@ -15,8 +15,9 @@ The script:
 5. Creates a portable ZIP from the same PyInstaller directory.
 
 The directory build also verifies that the QtCore, PySide6, Shiboken,
-Python runtime, VC runtime, and ICU DLLs required by the frozen application
-are present before packaging continues.
+Python runtime, and VC runtime required by the frozen application are present
+before packaging continues. It removes the incompatible version-suffixed ICU
+DLLs shipped in the PySide6 wheel so Qt uses the Windows 10/11 ICU ABI.
 
 Outputs are written to:
 

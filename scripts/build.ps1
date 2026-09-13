@@ -69,6 +69,17 @@ try {
         throw 'Bundled Tesseract is incomplete. Add vendor\tesseract\tesseract.exe and tessdata\eng.traineddata, or use -AllowExternalTesseract for a development build.'
     }
 
+    # Qt6Core from the PySide6 wheel links against the Windows ICU ABI. The
+    # wheel also contains ICU DLLs with version-suffixed exports, which are
+    # incompatible with Qt6Core's unversioned imports. Remove those private
+    # copies so Windows 10/11's compatible system ICU is selected instead.
+    $internalRoot = Join-Path $distRoot 'ScreenTranslator\_internal'
+    $incompatibleIcuFiles = Get-ChildItem -LiteralPath $internalRoot -File -Filter 'icu*.dll' -ErrorAction SilentlyContinue
+    if ($incompatibleIcuFiles) {
+        $incompatibleIcuFiles | Remove-Item -Force
+        Write-Host "Removed incompatible bundled ICU DLLs: $($incompatibleIcuFiles.Name -join ', ')"
+    }
+
     & (Join-Path $PSScriptRoot 'verify-bundle.ps1') -BundleRoot (Join-Path $distRoot 'ScreenTranslator')
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller bundle verification failed with exit code $LASTEXITCODE."
