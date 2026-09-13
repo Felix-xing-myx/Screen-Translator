@@ -14,6 +14,10 @@ The script:
 4. Compiles packaging\ScreenTranslator.iss with Inno Setup 6.
 5. Creates a portable ZIP from the same PyInstaller directory.
 
+The directory build also verifies that the QtCore, PySide6, Shiboken,
+Python runtime, VC runtime, and ICU DLLs required by the frozen application
+are present before packaging continues.
+
 Outputs are written to:
 
 ~~~text

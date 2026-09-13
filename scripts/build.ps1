@@ -69,6 +69,11 @@ try {
         throw 'Bundled Tesseract is incomplete. Add vendor\tesseract\tesseract.exe and tessdata\eng.traineddata, or use -AllowExternalTesseract for a development build.'
     }
 
+    & (Join-Path $PSScriptRoot 'verify-bundle.ps1') -BundleRoot (Join-Path $distRoot 'ScreenTranslator')
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller bundle verification failed with exit code $LASTEXITCODE."
+    }
+
     Write-Host "Build complete: $projectRoot\dist\ScreenTranslator"
 } finally {
     Pop-Location
